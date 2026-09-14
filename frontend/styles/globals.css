@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+html.light {
+  --bg: #F5F7FA;
+  --surface: #FFFFFF;
+  --surface2: #EDF0F4;
+  --ink: #10151F;
+  --inksoft: #5B6472;
+  --line: #DFE3E9;
+}
+
+body {
+  background: var(--bg, #0A0E15);
+  color: var(--ink, #E8EDF5);
+  font-family: 'IBM Plex Sans', sans-serif;
+}
