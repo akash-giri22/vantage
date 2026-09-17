@@ -8,6 +8,62 @@ function getHistoryKey(user) {
   return `vantage-resumes-${user.email}`;
 }
 
+function ensurePdfName(name) {
+  const clean = (name || 'resume.pdf').trim();
+  return /\.pdf$/i.test(clean) ? clean : `${clean}.pdf`;
+}
+
+function buildUpdatedName(originalName) {
+  const clean = (originalName || 'Resume.pdf').trim();
+  const base = clean.replace(/\.pdf$/i, '').replace(/\.[^/.]+$/, '');
+  return `${base}_AI.pdf`;
+}
+
+function normalizeHistory(history) {
+  const list = Array.isArray(history) ? [...history] : [];
+
+  const originals = list.filter((r) => !r.isOptimized);
+  const optimized = list.filter((r) => r.isOptimized);
+
+  // Old localStorage data migration:
+  // if an older AI resume has no parentId, attach it to
+  // the nearest previous original resume.
+  optimized.forEach((child) => {
+    if (child.parentId) return;
+
+    const previousOriginals = originals
+      .filter((o) => Number(o.id) < Number(child.id))
+      .sort((a, b) => Number(b.id) - Number(a.id));
+
+    if (previousOriginals.length > 0) {
+      child.parentId = previousOriginals[0].id;
+    }
+  });
+
+  // FIFO:
+  // only newest 2 ORIGINAL resumes are allowed.
+  const keptOriginals = originals
+    .sort((a, b) => Number(a.id) - Number(b.id))
+    .slice(-2);
+
+  const result = [];
+
+  keptOriginals.forEach((original) => {
+    result.push(original);
+
+    // Only newest AI version for this original.
+    const child = optimized
+      .filter((r) => r.parentId === original.id)
+      .sort((a, b) => Number(b.id) - Number(a.id))[0];
+
+    if (child) {
+      result.push(child);
+    }
+  });
+
+  return result;
+}
+
 export default function ResumePage() {
   const { user } = useAuth();
 
@@ -38,6 +94,7 @@ export default function ResumePage() {
   // =====================================================
 
   const [downloadBase64, setDownloadBase64] = useState('');
+
   const [downloadFilename, setDownloadFilename] =
     useState('updated_resume.pdf');
 
@@ -48,40 +105,58 @@ export default function ResumePage() {
   const [loading, setLoading] = useState(false);
   const [fixing, setFixing] = useState(false);
 
-  // Shows current AI attempt
   const [optimizationStatus, setOptimizationStatus] =
     useState('');
 
   // =====================================================
-  // RESUME HISTORY (per logged-in user email)
+  // RESUME HISTORY
   // =====================================================
 
   const [resumeHistory, setResumeHistory] = useState([]);
   const [activeId, setActiveId] = useState(null);
-  const [showUploadForm, setShowUploadForm] = useState(true);
+
+  const [showUploadForm, setShowUploadForm] =
+    useState(true);
+
+  const [openMenuId, setOpenMenuId] =
+    useState(null);
 
   // =====================================================
-  // LOAD SAVED HISTORY — reruns whenever the logged-in user changes
+  // LOAD SAVED HISTORY
   // =====================================================
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    if (!user) return; // wait until we know who's logged in
+    if (!user) return;
 
     const key = getHistoryKey(user);
 
     try {
-      const saved = window.localStorage.getItem(key);
-      const parsed = saved ? JSON.parse(saved) : [];
+      const saved =
+        window.localStorage.getItem(key);
 
-      if (parsed.length > 0) {
-        setResumeHistory(parsed);
-        const mostRecent = parsed[parsed.length - 1];
+      const parsed =
+        saved ? JSON.parse(saved) : [];
+
+      const normalized =
+        normalizeHistory(parsed);
+
+      if (normalized.length > 0) {
+        setResumeHistory(normalized);
+
+        window.localStorage.setItem(
+          key,
+          JSON.stringify(normalized)
+        );
+
+        const mostRecent =
+          normalized[normalized.length - 1];
+
         applyEntryToState(mostRecent);
+
         setActiveId(mostRecent.id);
         setShowUploadForm(false);
       } else {
-        // this email has no saved resumes yet — blank slate
         setResumeHistory([]);
         setActiveId(null);
         setFileName('');
@@ -89,67 +164,226 @@ export default function ResumePage() {
         setScore(null);
         setBreakdown([]);
         setNote('');
+
         setUpdatedScore(null);
         setUpdatedBreakdown([]);
         setUpdatedNote('');
+
         setChanges([]);
         setRewrittenResume('');
+
         setDownloadBase64('');
+        setDownloadFilename(
+          'updated_resume.pdf'
+        );
+
         setShowUploadForm(true);
       }
     } catch (e) {
-      console.error('Failed to load resume history:', e);
+      console.error(
+        'Failed to load resume history:',
+        e
+      );
     }
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   // =====================================================
-  // HISTORY HELPERS (NEW)
+  // CLOSE 3 DOT MENU ON OUTSIDE CLICK
+  // =====================================================
+
+  useEffect(() => {
+    function handleOutsideClick() {
+      setOpenMenuId(null);
+    }
+
+    document.addEventListener(
+      'click',
+      handleOutsideClick
+    );
+
+    return () =>
+      document.removeEventListener(
+        'click',
+        handleOutsideClick
+      );
+  }, []);
+
+  // =====================================================
+  // HISTORY HELPERS
   // =====================================================
 
   function persistHistory(updatedHistory) {
-    setResumeHistory(updatedHistory);
+    const normalized =
+      normalizeHistory(updatedHistory);
+
+    setResumeHistory(normalized);
+
     if (typeof window !== 'undefined') {
-      const key = getHistoryKey(user);
-      window.localStorage.setItem(key, JSON.stringify(updatedHistory));
+      const key =
+        getHistoryKey(user);
+
+      window.localStorage.setItem(
+        key,
+        JSON.stringify(normalized)
+      );
     }
   }
 
   function applyEntryToState(entry) {
-    setFileName(entry.fileName || '');
-    setResumeText(entry.resumeText || '');
-    setScore(entry.score ?? null);
-    setBreakdown(entry.breakdown || []);
-    setNote(entry.note || '');
+    if (!entry) return;
 
-    setUpdatedScore(entry.updatedScore ?? null);
-    setUpdatedBreakdown(entry.updatedBreakdown || []);
-    setUpdatedNote(entry.updatedNote || '');
+    setFileName(
+      entry.fileName || ''
+    );
 
-    setChanges(entry.changes || []);
-    setRewrittenResume(entry.rewrittenResume || '');
+    setResumeText(
+      entry.resumeText || ''
+    );
 
-    setDownloadBase64(entry.downloadBase64 || '');
-    setDownloadFilename(entry.downloadFilename || 'updated_resume.pdf');
+    setScore(
+      entry.score ?? null
+    );
+
+    setBreakdown(
+      entry.breakdown || []
+    );
+
+    setNote(
+      entry.note || ''
+    );
+
+    setUpdatedScore(
+      entry.updatedScore ?? null
+    );
+
+    setUpdatedBreakdown(
+      entry.updatedBreakdown || []
+    );
+
+    setUpdatedNote(
+      entry.updatedNote || ''
+    );
+
+    setChanges(
+      entry.changes || []
+    );
+
+    setRewrittenResume(
+      entry.rewrittenResume || ''
+    );
+
+    setDownloadBase64(
+      entry.downloadBase64 || ''
+    );
+
+    setDownloadFilename(
+      entry.downloadFilename ||
+      'updated_resume.pdf'
+    );
   }
 
   function selectResume(id) {
-    const entry = resumeHistory.find((r) => r.id === id);
+    const entry =
+      resumeHistory.find(
+        (r) => r.id === id
+      );
+
     if (!entry) return;
 
     applyEntryToState(entry);
+
     setActiveId(id);
+
     setShowUploadForm(false);
+
     setOptimizationStatus('');
   }
 
+  // =====================================================
+  // DELETE RESUME
+  // =====================================================
+
   function deleteResume(id) {
-    const updatedHistory = resumeHistory.filter((r) => r.id !== id);
+    const target =
+      resumeHistory.find(
+        (r) => r.id === id
+      );
+
+    if (!target) return;
+
+    let updatedHistory;
+
+    if (target.isOptimized) {
+      // Delete ONLY updated AI version.
+      updatedHistory =
+        resumeHistory.filter(
+          (r) => r.id !== id
+        );
+
+      // Clear updated fields from parent original.
+      updatedHistory =
+        updatedHistory.map((r) =>
+          r.id === target.parentId
+            ? {
+                ...r,
+                updatedScore: null,
+                updatedBreakdown: [],
+                updatedNote: '',
+                changes: [],
+                rewrittenResume: '',
+                downloadBase64: '',
+                downloadFilename:
+                  'updated_resume.pdf',
+              }
+            : r
+        );
+    } else {
+      // Original delete:
+      // remove original + its AI child.
+      updatedHistory =
+        resumeHistory.filter(
+          (r) =>
+            r.id !== id &&
+            r.parentId !== id
+        );
+    }
+
     persistHistory(updatedHistory);
 
-    if (activeId === id) {
+    const activeEntryBeforeDelete =
+      resumeHistory.find(
+        (r) => r.id === activeId
+      );
+
+    const shouldChangeActive =
+      activeId === id ||
+      (
+        !target.isOptimized &&
+        activeEntryBeforeDelete?.parentId === id
+      );
+
+    if (shouldChangeActive) {
       if (updatedHistory.length > 0) {
-        selectResume(updatedHistory[updatedHistory.length - 1].id);
+        const nextOriginal =
+          [...updatedHistory]
+            .reverse()
+            .find(
+              (r) => !r.isOptimized
+            );
+
+        const next =
+          nextOriginal ||
+          updatedHistory[
+            updatedHistory.length - 1
+          ];
+
+        applyEntryToState(next);
+
+        setActiveId(next.id);
+
+        setShowUploadForm(false);
       } else {
         setActiveId(null);
         setFileName('');
@@ -157,425 +391,115 @@ export default function ResumePage() {
         setScore(null);
         setBreakdown([]);
         setNote('');
+
         setUpdatedScore(null);
         setUpdatedBreakdown([]);
         setUpdatedNote('');
+
         setChanges([]);
         setRewrittenResume('');
+
         setDownloadBase64('');
+        setDownloadFilename(
+          'updated_resume.pdf'
+        );
+
         setShowUploadForm(true);
       }
     }
   }
 
   // =====================================================
-  // UPLOAD RESUME
+  // RENAME RESUME
   // =====================================================
 
-  const handleUpload = async (event) => {
-    const file = event.target.files?.[0];
-
-    if (!file) return;
-
-    setFileName(file.name);
-
-    // Reset old result
-    setResumeText('');
-    setScore(null);
-    setBreakdown([]);
-    setNote('');
-
-    setUpdatedScore(null);
-    setUpdatedBreakdown([]);
-    setUpdatedNote('');
-
-    setChanges([]);
-    setRewrittenResume('');
-
-    setDownloadBase64('');
-    setDownloadFilename('updated_resume.pdf');
-
-    setOptimizationStatus('');
-
-    setLoading(true);
-
-    try {
-      const formData = new FormData();
-
-      formData.append('file', file);
-
-      const result = await api.uploadResume(formData);
-
-      setResumeText(
-        result.resume_text || ''
+  function renameResume(
+    id,
+    currentName
+  ) {
+    const newName =
+      window.prompt(
+        'Rename this resume:',
+        currentName
       );
 
-      // Save it so the Customize page can use the real resume text
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem(
-          'vantage-resume-text',
-          result.resume_text || ''
-        );
-      }
-
-      setScore(
-        result.score ?? null
-      );
-
-      setBreakdown(
-        result.breakdown || []
-      );
-
-      setNote(
-        result.note || ''
-      );
-
-      // ===== add this resume to history instead of overwriting =====
-      const newEntry = {
-        id: Date.now(),
-        fileName: file.name,
-        resumeText: result.resume_text || '',
-        score: result.score ?? null,
-        breakdown: result.breakdown || [],
-        note: result.note || '',
-        updatedScore: null,
-        updatedBreakdown: [],
-        updatedNote: '',
-        changes: [],
-        rewrittenResume: '',
-        downloadBase64: '',
-        downloadFilename: 'updated_resume.pdf',
-      };
-
-      const updatedHistory = [...resumeHistory, newEntry];
-      persistHistory(updatedHistory);
-      setActiveId(newEntry.id);
-      setShowUploadForm(false);
-      // ===== END =====
-
-    } catch (error) {
-      console.error(
-        'Resume upload failed:',
-        error
-      );
-
-      setNote(
-        `Unable to analyze the resume: ${error.message}`
-      );
-
-    } finally {
-      setLoading(false);
-    }
-  };
-
-
-  // =====================================================
-  // FIX WITH AI
-  // =====================================================
-
-  const fixWithAI = async () => {
-    if (!resumeText) {
-      setNote(
-        'Please upload a resume first.'
-      );
+    if (
+      !newName ||
+      !newName.trim()
+    ) {
       return;
     }
 
-    if (score === null) {
-      setNote(
-        'ATS score is not ready yet.'
+    const cleanName =
+      newName.trim();
+
+    const target =
+      resumeHistory.find(
+        (r) => r.id === id
       );
-      return;
-    }
 
-    setFixing(true);
+    if (!target) return;
 
-    // Remove previous optimized result
-    setUpdatedScore(null);
-    setUpdatedBreakdown([]);
-    setUpdatedNote('');
+    const updatedHistory =
+      resumeHistory.map((r) => {
+        if (r.id !== id) {
+          return r;
+        }
 
-    setChanges([]);
-    setRewrittenResume('');
+        // For AI resume:
+        // download filename must exactly
+        // follow renamed UI filename.
+        if (r.isOptimized) {
+          return {
+            ...r,
+            fileName:
+              cleanName,
 
-    setDownloadBase64('');
-    setDownloadFilename('updated_resume.pdf');
+            downloadFilename:
+              ensurePdfName(
+                cleanName
+              ),
+          };
+        }
 
-    // ===================================================
-    // TARGET SETTINGS
-    // ===================================================
+        return {
+          ...r,
+          fileName:
+            cleanName,
+        };
+      });
 
-    const MAX_ATTEMPTS = 2;
-
-    // Target minimum 85.
-    // If original is already 85+, target at least +1.
-    const TARGET_SCORE = Math.max(
-      85,
-      score + 1
+    persistHistory(
+      updatedHistory
     );
 
-    // Best AI result found so far
-    let bestResult = null;
-    let bestScore = score;
+    if (id === activeId) {
+      setFileName(
+        cleanName
+      );
 
-    // Start every optimization from the original resume
-    let resumeForNextAttempt = resumeText;
-
-    try {
-
-      // =================================================
-      // MULTIPLE AI OPTIMIZATION ATTEMPTS
-      // =================================================
-
-      for (
-        let attempt = 1;
-        attempt <= MAX_ATTEMPTS;
-        attempt++
-      ) {
-
-        setOptimizationStatus(
-          `AI optimization ${attempt}/${MAX_ATTEMPTS} — Target ${TARGET_SCORE}+ ATS`
+      if (target.isOptimized) {
+        setDownloadFilename(
+          ensurePdfName(
+            cleanName
+          )
         );
-
-        console.log(
-          `AI attempt ${attempt}/${MAX_ATTEMPTS}`
-        );
-
-        console.log(
-          `Current best ATS score: ${bestScore}`
-        );
-
-        // -----------------------------------------------
-        // AI REWRITE + BACKEND RE-SCORE
-        // -----------------------------------------------
-
-        const result = await api.tailorResume(
-          resumeForNextAttempt,
-          ''
-        );
-
-        const candidateScore =
-          Number(result.updated_score ?? 0);
-
-        console.log(
-          `Attempt ${attempt} ATS score:`,
-          candidateScore
-        );
-
-        // -----------------------------------------------
-        // KEEP ONLY BETTER RESULT
-        // -----------------------------------------------
-
-        if (
-          candidateScore > bestScore &&
-          result.rewritten_resume
-        ) {
-          bestScore = candidateScore;
-
-          bestResult = result;
-
-          // Next attempt improves the current best version
-          resumeForNextAttempt =
-            result.rewritten_resume;
-
-          console.log(
-            `New best ATS score: ${bestScore}`
-          );
-        }
-
-        // -----------------------------------------------
-        // TARGET ACHIEVED
-        // -----------------------------------------------
-
-        if (
-          bestScore >= TARGET_SCORE
-        ) {
-          console.log(
-            `Target achieved: ${bestScore}`
-          );
-
-          break;
-        }
-
-        // -----------------------------------------------
-        // IF THIS VERSION WAS WORSE
-        // Retry using current best/original.
-        // -----------------------------------------------
-
-        if (
-          candidateScore <= bestScore &&
-          !bestResult
-        ) {
-          resumeForNextAttempt =
-            resumeText;
-        }
       }
-
-
-      // =================================================
-      // NO IMPROVEMENT FOUND
-      // =================================================
-
-      if (!bestResult) {
-        setOptimizationStatus('');
-
-        setUpdatedScore(score);
-
-        setUpdatedBreakdown(
-          breakdown
-        );
-
-        setUpdatedNote(
-          'AI tested multiple resume improvements, but none scored higher than your original resume. Your original version remains the stronger ATS version.'
-        );
-
-        setChanges([]);
-        setRewrittenResume('');
-        setDownloadBase64('');
-
-        setNote(
-          `Your original ATS score of ${score} is still the best result. Lower-scoring AI versions were rejected automatically.`
-        );
-
-        // ===== save "no improvement" result into history entry =====
-        if (activeId) {
-          const updatedHistory = resumeHistory.map((r) =>
-            r.id === activeId
-              ? {
-                  ...r,
-                  updatedScore: score,
-                  updatedBreakdown: breakdown,
-                  updatedNote:
-                    'AI tested multiple resume improvements, but none scored higher than your original resume. Your original version remains the stronger ATS version.',
-                }
-              : r
-          );
-          persistHistory(updatedHistory);
-        }
-        // ===== END =====
-
-        return;
-      }
-
-
-      // =================================================
-      // BEST RESULT FOUND
-      // =================================================
-
-      setUpdatedScore(
-        bestResult.updated_score
-      );
-
-      setUpdatedBreakdown(
-        bestResult.updated_breakdown || []
-      );
-
-      setUpdatedNote(
-        bestResult.updated_note || ''
-      );
-
-
-      // =================================================
-      // CHANGES
-      // =================================================
-
-      setChanges(
-        bestResult.changes || []
-      );
-
-
-      // =================================================
-      // REWRITTEN RESUME
-      // =================================================
-
-      setRewrittenResume(
-        bestResult.rewritten_resume || ''
-      );
-
-
-      // =================================================
-      // BEST PDF
-      // =================================================
-
-      setDownloadBase64(
-        bestResult.download_base64 || ''
-      );
-
-      setDownloadFilename(
-        bestResult.download_filename ||
-        'updated_resume.pdf'
-      );
-
-
-      // =================================================
-      // SUCCESS MESSAGE
-      // =================================================
-
-      const improvement =
-        bestResult.updated_score - score;
-
-      let finalNote = '';
-
-      if (
-        bestResult.updated_score >= TARGET_SCORE
-      ) {
-        finalNote = `Resume optimized successfully. ATS score improved from ${score} to ${bestResult.updated_score} (+${improvement} points).`;
-        setNote(finalNote);
-      } else {
-        finalNote = `Best truthful AI optimization improved your ATS score from ${score} to ${bestResult.updated_score} (+${improvement} points). Target was ${TARGET_SCORE}+, but lower-scoring versions were rejected.`;
-        setNote(finalNote);
-      }
-
-      setOptimizationStatus(
-        `Best ATS version selected: ${bestResult.updated_score}`
-      );
-
-      // ===== save the AI result into this resume's history entry =====
-      if (activeId) {
-        const updatedHistory = resumeHistory.map((r) =>
-          r.id === activeId
-            ? {
-                ...r,
-                updatedScore: bestResult.updated_score,
-                updatedBreakdown: bestResult.updated_breakdown || [],
-                updatedNote: bestResult.updated_note || '',
-                changes: bestResult.changes || [],
-                rewrittenResume: bestResult.rewritten_resume || '',
-                downloadBase64: bestResult.download_base64 || '',
-                downloadFilename: bestResult.download_filename || 'updated_resume.pdf',
-              }
-            : r
-        );
-        persistHistory(updatedHistory);
-      }
-      // ===== END =====
-
-    } catch (error) {
-      console.error(
-        'AI rewriting failed:',
-        error
-      );
-
-      setOptimizationStatus('');
-
-      setNote(
-        `AI rewriting failed: ${error.message}`
-      );
-
-    } finally {
-      setFixing(false);
     }
-  };
-
+  }
 
   // =====================================================
-  // DOWNLOAD PDF
+  // DOWNLOAD ANY AI TILE
   // =====================================================
 
-  const downloadUpdatedResume = () => {
-    if (!downloadBase64) {
-      setNote(
-        'Updated resume is not ready yet.'
+  function downloadEntryPdf(
+    entry
+  ) {
+    if (
+      !entry.downloadBase64
+    ) {
+      alert(
+        'No PDF available for this updated resume.'
       );
 
       return;
@@ -583,7 +507,9 @@ export default function ResumePage() {
 
     try {
       const byteCharacters =
-        atob(downloadBase64);
+        atob(
+          entry.downloadBase64
+        );
 
       const byteNumbers =
         new Array(
@@ -592,11 +518,14 @@ export default function ResumePage() {
 
       for (
         let i = 0;
-        i < byteCharacters.length;
+        i <
+        byteCharacters.length;
         i++
       ) {
         byteNumbers[i] =
-          byteCharacters.charCodeAt(i);
+          byteCharacters.charCodeAt(
+            i
+          );
       }
 
       const byteArray =
@@ -608,7 +537,8 @@ export default function ResumePage() {
         new Blob(
           [byteArray],
           {
-            type: 'application/pdf'
+            type:
+              'application/pdf'
           }
         );
 
@@ -618,13 +548,24 @@ export default function ResumePage() {
         );
 
       const link =
-        document.createElement('a');
+        document.createElement(
+          'a'
+        );
 
-      link.href = url;
+      link.href =
+        url;
 
       link.download =
-        downloadFilename ||
-        'updated_resume.pdf';
+        entry.isOptimized
+          ? ensurePdfName(
+              entry.fileName
+            )
+          : (
+              entry.downloadFilename ||
+              ensurePdfName(
+                entry.fileName
+              )
+            );
 
       document.body.appendChild(
         link
@@ -637,43 +578,770 @@ export default function ResumePage() {
       window.URL.revokeObjectURL(
         url
       );
-
     } catch (error) {
       console.error(
         'PDF download failed:',
         error
       );
-
-      setNote(
-        'Unable to download the updated PDF.'
-      );
     }
-  };
+  }
 
+  // =====================================================
+  // UPLOAD RESUME
+  // =====================================================
+
+  const handleUpload =
+    async (event) => {
+      const file =
+        event.target.files?.[0];
+
+      if (!file) return;
+
+      setFileName(
+        file.name
+      );
+
+      setResumeText('');
+
+      setScore(null);
+
+      setBreakdown([]);
+
+      setNote('');
+
+      setUpdatedScore(null);
+
+      setUpdatedBreakdown([]);
+
+      setUpdatedNote('');
+
+      setChanges([]);
+
+      setRewrittenResume('');
+
+      setDownloadBase64('');
+
+      setDownloadFilename(
+        'updated_resume.pdf'
+      );
+
+      setOptimizationStatus('');
+
+      setLoading(true);
+
+      try {
+        const formData =
+          new FormData();
+
+        formData.append(
+          'file',
+          file
+        );
+
+        const result =
+          await api.uploadResume(
+            formData
+          );
+
+        setResumeText(
+          result.resume_text ||
+          ''
+        );
+
+        if (
+          typeof window !==
+          'undefined'
+        ) {
+          window.localStorage.setItem(
+            'vantage-resume-text',
+            result.resume_text ||
+            ''
+          );
+        }
+
+        setScore(
+          result.score ??
+          null
+        );
+
+        setBreakdown(
+          result.breakdown ||
+          []
+        );
+
+        setNote(
+          result.note ||
+          ''
+        );
+
+        const newEntry = {
+          id:
+            Date.now(),
+
+          fileName:
+            file.name,
+
+          resumeText:
+            result.resume_text ||
+            '',
+
+          score:
+            result.score ??
+            null,
+
+          breakdown:
+            result.breakdown ||
+            [],
+
+          note:
+            result.note ||
+            '',
+
+          updatedScore:
+            null,
+
+          updatedBreakdown:
+            [],
+
+          updatedNote:
+            '',
+
+          changes:
+            [],
+
+          rewrittenResume:
+            '',
+
+          downloadBase64:
+            '',
+
+          downloadFilename:
+            'updated_resume.pdf',
+
+          isOptimized:
+            false,
+
+          parentId:
+            null,
+        };
+
+        // ==============================================
+        // FIFO MAXIMUM 2 ORIGINAL RESUMES
+        // ==============================================
+
+        const existingOriginals =
+          resumeHistory.filter(
+            (r) =>
+              !r.isOptimized
+          );
+
+        let trimmedHistory =
+          [...resumeHistory];
+
+        // If already 2 originals exist,
+        // uploading 3rd removes oldest pair.
+        if (
+          existingOriginals.length >=
+          2
+        ) {
+          const oldestOriginal =
+            [...existingOriginals]
+              .sort(
+                (a, b) =>
+                  Number(a.id) -
+                  Number(b.id)
+              )[0];
+
+          trimmedHistory =
+            trimmedHistory.filter(
+              (r) =>
+                r.id !==
+                  oldestOriginal.id &&
+                r.parentId !==
+                  oldestOriginal.id
+            );
+        }
+
+        const updatedHistory = [
+          ...trimmedHistory,
+          newEntry,
+        ];
+
+        persistHistory(
+          updatedHistory
+        );
+
+        setActiveId(
+          newEntry.id
+        );
+
+        setShowUploadForm(
+          false
+        );
+      } catch (error) {
+        console.error(
+          'Resume upload failed:',
+          error
+        );
+
+        setNote(
+          `Unable to analyze the resume: ${error.message}`
+        );
+      } finally {
+        setLoading(false);
+      }
+    };
+
+  // =====================================================
+  // FIX WITH AI
+  // =====================================================
+
+  const fixWithAI =
+    async () => {
+      if (!resumeText) {
+        setNote(
+          'Please upload a resume first.'
+        );
+
+        return;
+      }
+
+      if (score === null) {
+        setNote(
+          'ATS score is not ready yet.'
+        );
+
+        return;
+      }
+
+      setFixing(true);
+
+      setUpdatedScore(null);
+
+      setUpdatedBreakdown([]);
+
+      setUpdatedNote('');
+
+      setChanges([]);
+
+      setRewrittenResume('');
+
+      setDownloadBase64('');
+
+      setDownloadFilename(
+        'updated_resume.pdf'
+      );
+
+      const MAX_ATTEMPTS =
+        2;
+
+      const TARGET_SCORE =
+        Math.max(
+          85,
+          score + 1
+        );
+
+      let bestResult =
+        null;
+
+      let bestScore =
+        score;
+
+      let resumeForNextAttempt =
+        resumeText;
+
+      try {
+        for (
+          let attempt = 1;
+          attempt <=
+          MAX_ATTEMPTS;
+          attempt++
+        ) {
+          setOptimizationStatus(
+            `AI optimization ${attempt}/${MAX_ATTEMPTS} — Target ${TARGET_SCORE}+ ATS`
+          );
+
+          const result =
+            await api.tailorResume(
+              resumeForNextAttempt,
+              ''
+            );
+
+          const candidateScore =
+            Number(
+              result.updated_score ??
+              0
+            );
+
+          if (
+            candidateScore >
+              bestScore &&
+            result.rewritten_resume
+          ) {
+            bestScore =
+              candidateScore;
+
+            bestResult =
+              result;
+
+            resumeForNextAttempt =
+              result.rewritten_resume;
+          }
+
+          if (
+            bestScore >=
+            TARGET_SCORE
+          ) {
+            break;
+          }
+
+          if (
+            candidateScore <=
+              bestScore &&
+            !bestResult
+          ) {
+            resumeForNextAttempt =
+              resumeText;
+          }
+        }
+
+        // =============================================
+        // NO BETTER RESULT
+        // =============================================
+
+        if (!bestResult) {
+          setOptimizationStatus(
+            ''
+          );
+
+          setUpdatedScore(
+            score
+          );
+
+          setUpdatedBreakdown(
+            breakdown
+          );
+
+          setUpdatedNote(
+            'AI tested multiple resume improvements, but none scored higher than your original resume. Your original version remains the stronger ATS version.'
+          );
+
+          setChanges([]);
+
+          setRewrittenResume(
+            ''
+          );
+
+          setDownloadBase64(
+            ''
+          );
+
+          setNote(
+            `Your original ATS score of ${score} is still the best result. Lower-scoring AI versions were rejected automatically.`
+          );
+
+          if (activeId) {
+            const updatedHistory =
+              resumeHistory.map(
+                (r) =>
+                  r.id ===
+                  activeId
+                    ? {
+                        ...r,
+
+                        updatedScore:
+                          score,
+
+                        updatedBreakdown:
+                          breakdown,
+
+                        updatedNote:
+                          'AI tested multiple resume improvements, but none scored higher than your original resume. Your original version remains the stronger ATS version.',
+                      }
+                    : r
+              );
+
+            persistHistory(
+              updatedHistory
+            );
+          }
+
+          return;
+        }
+
+        // =============================================
+        // BEST AI RESULT
+        // =============================================
+
+        setUpdatedScore(
+          bestResult.updated_score
+        );
+
+        setUpdatedBreakdown(
+          bestResult.updated_breakdown ||
+          []
+        );
+
+        setUpdatedNote(
+          bestResult.updated_note ||
+          ''
+        );
+
+        setChanges(
+          bestResult.changes ||
+          []
+        );
+
+        setRewrittenResume(
+          bestResult.rewritten_resume ||
+          ''
+        );
+
+        setDownloadBase64(
+          bestResult.download_base64 ||
+          ''
+        );
+
+        setDownloadFilename(
+          bestResult.download_filename ||
+          'updated_resume.pdf'
+        );
+
+        const improvement =
+          bestResult.updated_score -
+          score;
+
+        if (
+          bestResult.updated_score >=
+          TARGET_SCORE
+        ) {
+          setNote(
+            `Resume optimized successfully. ATS score improved from ${score} to ${bestResult.updated_score} (+${improvement} points).`
+          );
+        } else {
+          setNote(
+            `Best truthful AI optimization improved your ATS score from ${score} to ${bestResult.updated_score} (+${improvement} points). Target was ${TARGET_SCORE}+, but lower-scoring versions were rejected.`
+          );
+        }
+
+        setOptimizationStatus(
+          `Best ATS version selected: ${bestResult.updated_score}`
+        );
+
+        // =============================================
+        // ORIGINAL + UPDATED RESUME PAIR
+        // =============================================
+
+        if (activeId) {
+          const currentActive =
+            resumeHistory.find(
+              (r) =>
+                r.id ===
+                activeId
+            );
+
+          const originalId =
+            currentActive?.isOptimized
+              ? currentActive.parentId
+              : activeId;
+
+          const originalEntry =
+            resumeHistory.find(
+              (r) =>
+                r.id ===
+                  originalId &&
+                !r.isOptimized
+            );
+
+          if (originalEntry) {
+            const optimizedName =
+              buildUpdatedName(
+                originalEntry.fileName
+              );
+
+            const newOptimizedEntry =
+              {
+                id:
+                  Date.now(),
+
+                parentId:
+                  originalId,
+
+                fileName:
+                  optimizedName,
+
+                resumeText:
+                  bestResult.rewritten_resume ||
+                  '',
+
+                score:
+                  bestResult.updated_score,
+
+                breakdown:
+                  bestResult.updated_breakdown ||
+                  [],
+
+                note:
+                  bestResult.updated_note ||
+                  '',
+
+                updatedScore:
+                  null,
+
+                updatedBreakdown:
+                  [],
+
+                updatedNote:
+                  '',
+
+                changes:
+                  bestResult.changes ||
+                  [],
+
+                rewrittenResume:
+                  bestResult.rewritten_resume ||
+                  '',
+
+                downloadBase64:
+                  bestResult.download_base64 ||
+                  '',
+
+                downloadFilename:
+                  ensurePdfName(
+                    optimizedName
+                  ),
+
+                isOptimized:
+                  true,
+              };
+
+            // Update original entry with
+            // ATS improvement information.
+            let updatedHistory =
+              resumeHistory.map(
+                (r) =>
+                  r.id ===
+                  originalId
+                    ? {
+                        ...r,
+
+                        updatedScore:
+                          bestResult.updated_score,
+
+                        updatedBreakdown:
+                          bestResult.updated_breakdown ||
+                          [],
+
+                        updatedNote:
+                          bestResult.updated_note ||
+                          '',
+
+                        changes:
+                          bestResult.changes ||
+                          [],
+
+                        rewrittenResume:
+                          bestResult.rewritten_resume ||
+                          '',
+
+                        downloadBase64:
+                          bestResult.download_base64 ||
+                          '',
+
+                        downloadFilename:
+                          ensurePdfName(
+                            optimizedName
+                          ),
+                      }
+                    : r
+              );
+
+            // Only ONE updated AI version
+            // is allowed for each original.
+            updatedHistory =
+              updatedHistory.filter(
+                (r) =>
+                  !(
+                    r.isOptimized &&
+                    r.parentId ===
+                      originalId
+                  )
+              );
+
+            updatedHistory.push(
+              newOptimizedEntry
+            );
+
+            updatedHistory =
+              normalizeHistory(
+                updatedHistory
+              );
+
+            persistHistory(
+              updatedHistory
+            );
+
+            // After AI finishes,
+            // automatically open
+            // the UPDATED resume.
+            applyEntryToState(
+              newOptimizedEntry
+            );
+
+            setActiveId(
+              newOptimizedEntry.id
+            );
+
+            setShowUploadForm(
+              false
+            );
+          }
+        }
+      } catch (error) {
+        console.error(
+          'AI rewriting failed:',
+          error
+        );
+
+        setOptimizationStatus(
+          ''
+        );
+
+        setNote(
+          `AI rewriting failed: ${error.message}`
+        );
+      } finally {
+        setFixing(false);
+      }
+    };
+
+  // =====================================================
+  // DOWNLOAD UPDATED PDF
+  // =====================================================
+
+  const downloadUpdatedResume =
+    () => {
+      if (!downloadBase64) {
+        setNote(
+          'Updated resume is not ready yet.'
+        );
+
+        return;
+      }
+
+      try {
+        const byteCharacters =
+          atob(
+            downloadBase64
+          );
+
+        const byteNumbers =
+          new Array(
+            byteCharacters.length
+          );
+
+        for (
+          let i = 0;
+          i <
+          byteCharacters.length;
+          i++
+        ) {
+          byteNumbers[i] =
+            byteCharacters.charCodeAt(
+              i
+            );
+        }
+
+        const byteArray =
+          new Uint8Array(
+            byteNumbers
+          );
+
+        const blob =
+          new Blob(
+            [byteArray],
+            {
+              type:
+                'application/pdf'
+            }
+          );
+
+        const url =
+          window.URL.createObjectURL(
+            blob
+          );
+
+        const link =
+          document.createElement(
+            'a'
+          );
+
+        link.href =
+          url;
+
+        const currentActive =
+          resumeHistory.find(
+            (r) =>
+              r.id ===
+              activeId
+          );
+
+        link.download =
+          currentActive?.isOptimized
+            ? ensurePdfName(
+                currentActive.fileName
+              )
+            : (
+                downloadFilename ||
+                'updated_resume.pdf'
+              );
+
+        document.body.appendChild(
+          link
+        );
+
+        link.click();
+
+        link.remove();
+
+        window.URL.revokeObjectURL(
+          url
+        );
+      } catch (error) {
+        console.error(
+          'PDF download failed:',
+          error
+        );
+
+        setNote(
+          'Unable to download the updated PDF.'
+        );
+      }
+    };
 
   // =====================================================
   // SCORE COLOR
   // =====================================================
 
-  const getScoreColor = (value) => {
-    if (
-      value === null ||
-      value === undefined
-    ) {
-      return '#64748b';
-    }
+  const getScoreColor =
+    (value) => {
+      if (
+        value === null ||
+        value === undefined
+      ) {
+        return '#64748b';
+      }
 
-    if (value >= 80) {
-      return '#2dd4bf';
-    }
+      if (value >= 80) {
+        return '#2dd4bf';
+      }
 
-    if (value >= 60) {
-      return '#fbbf24';
-    }
+      if (value >= 60) {
+        return '#fbbf24';
+      }
 
-    return '#f87171';
-  };
-
+      return '#f87171';
+    };
 
   // =====================================================
   // SCORE CIRCLE
@@ -687,38 +1355,59 @@ export default function ResumePage() {
       <div
         style={{
           display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          minWidth: '180px'
+          flexDirection:
+            'column',
+          alignItems:
+            'center',
+          minWidth:
+            '180px'
         }}
       >
         <div
           style={{
-            width: '160px',
-            height: '160px',
-            borderRadius: '50%',
+            width:
+              '160px',
+
+            height:
+              '160px',
+
+            borderRadius:
+              '50%',
 
             border:
               `14px solid ${getScoreColor(value)}`,
 
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'center',
-            alignItems: 'center',
+            display:
+              'flex',
+
+            flexDirection:
+              'column',
+
+            justifyContent:
+              'center',
+
+            alignItems:
+              'center',
 
             boxShadow:
               value !== null
                 ? `0 0 30px ${getScoreColor(value)}55`
                 : 'none',
 
-            background: '#111827'
+            background:
+              '#111827'
           }}
         >
           <div
             style={{
-              fontSize: '44px',
-              fontWeight: '800',
-              lineHeight: 1
+              fontSize:
+                '44px',
+
+              fontWeight:
+                '800',
+
+              lineHeight:
+                1
             }}
           >
             {value ?? '--'}
@@ -726,9 +1415,14 @@ export default function ResumePage() {
 
           <div
             style={{
-              color: '#94a3b8',
-              fontSize: '14px',
-              marginTop: '8px'
+              color:
+                '#94a3b8',
+
+              fontSize:
+                '14px',
+
+              marginTop:
+                '8px'
             }}
           >
             ATS score
@@ -737,9 +1431,14 @@ export default function ResumePage() {
 
         <div
           style={{
-            marginTop: '14px',
-            color: '#cbd5e1',
-            fontWeight: '700'
+            marginTop:
+              '14px',
+
+            color:
+              '#cbd5e1',
+
+            fontWeight:
+              '700'
           }}
         >
           {label}
@@ -747,7 +1446,6 @@ export default function ResumePage() {
       </div>
     );
   };
-
 
   // =====================================================
   // BREAKDOWN
@@ -766,23 +1464,33 @@ export default function ResumePage() {
     return (
       <div
         style={{
-          width: '100%',
-          marginTop: '25px'
+          width:
+            '100%',
+
+          marginTop:
+            '25px'
         }}
       >
         {items.map(
-          (item, index) => (
+          (
+            item,
+            index
+          ) => (
             <div
               key={index}
 
               style={{
-                display: 'flex',
+                display:
+                  'flex',
+
                 justifyContent:
                   'space-between',
 
-                alignItems: 'center',
+                alignItems:
+                  'center',
 
-                padding: '13px 0',
+                padding:
+                  '13px 0',
 
                 borderBottom:
                   '1px solid #263246'
@@ -790,7 +1498,8 @@ export default function ResumePage() {
             >
               <span
                 style={{
-                  color: '#cbd5e1'
+                  color:
+                    '#cbd5e1'
                 }}
               >
                 {item.label}
@@ -798,10 +1507,12 @@ export default function ResumePage() {
 
               <span
                 style={{
-                  fontWeight: '800',
+                  fontWeight:
+                    '800',
 
                   color:
-                    item.value >= 70
+                    item.value >=
+                    70
                       ? '#2dd4bf'
                       : '#fbbf24'
                 }}
@@ -815,25 +1526,52 @@ export default function ResumePage() {
     );
   };
 
-
   // =====================================================
   // MAIN UI
   // =====================================================
+
+  const activeEntry =
+    resumeHistory.find(
+      (r) =>
+        r.id ===
+        activeId
+    );
+
+  const activeLabel =
+    activeEntry?.isOptimized
+      ? 'Updated / AI Resume'
+      : 'Original Resume';
+
+  const originalResumes =
+    resumeHistory.filter(
+      (r) =>
+        !r.isOptimized
+    );
 
   return (
     <Layout>
       <div
         style={{
-          minHeight: '100vh',
-          background: '#0b111c',
-          color: '#f8fafc',
-          padding: '50px 30px'
+          minHeight:
+            '100vh',
+
+          background:
+            '#0b111c',
+
+          color:
+            '#f8fafc',
+
+          padding:
+            '50px 30px'
         }}
       >
         <div
           style={{
-            maxWidth: '1100px',
-            margin: '0 auto'
+            maxWidth:
+              '1100px',
+
+            margin:
+              '0 auto'
           }}
         >
 
@@ -843,14 +1581,20 @@ export default function ResumePage() {
 
           <div
             style={{
-              marginBottom: '30px'
+              marginBottom:
+                '30px'
             }}
           >
             <h1
               style={{
-                fontSize: '38px',
-                margin: 0,
-                marginBottom: '10px'
+                fontSize:
+                  '38px',
+
+                margin:
+                  0,
+
+                marginBottom:
+                  '10px'
               }}
             >
               Resume & ATS
@@ -858,9 +1602,14 @@ export default function ResumePage() {
 
             <p
               style={{
-                color: '#94a3b8',
-                fontSize: '18px',
-                margin: 0
+                color:
+                  '#94a3b8',
+
+                fontSize:
+                  '18px',
+
+                margin:
+                  0
               }}
             >
               Upload your resume, check your ATS score,
@@ -868,84 +1617,552 @@ export default function ResumePage() {
             </p>
           </div>
 
-
           {/* =================================================
-              RESUME HISTORY TILES
+              RESUME HISTORY
           ================================================= */}
 
-          {resumeHistory.length > 0 && (
+          {originalResumes.length >
+            0 && (
             <div
               style={{
-                display: 'flex',
-                gap: '12px',
-                flexWrap: 'wrap',
-                marginBottom: '20px',
+                display:
+                  'flex',
+
+                flexDirection:
+                  'column',
+
+                gap:
+                  '16px',
+
+                marginBottom:
+                  '20px',
               }}
             >
-              {resumeHistory.map((r) => (
-                <div
-                  key={r.id}
-                  onClick={() => selectResume(r.id)}
-                  style={{
-                    position: 'relative',
-                    cursor: 'pointer',
-                    background: r.id === activeId ? '#123c38' : '#111827',
-                    border: r.id === activeId ? '1px solid #2dd4bf' : '1px solid #263246',
-                    borderRadius: '12px',
-                    padding: '14px 40px 14px 16px',
-                    minWidth: '200px',
-                  }}
-                >
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteResume(r.id);
-                    }}
-                    title="Delete this resume"
-                    style={{
-                      position: 'absolute',
-                      top: '8px',
-                      right: '8px',
-                      border: 'none',
-                      background: 'transparent',
-                      color: '#94a3b8',
-                      fontSize: '14px',
-                      cursor: 'pointer',
-                      padding: '4px',
-                    }}
-                  >
-                    ✕
-                  </button>
-                  <div style={{ fontSize: '13px', fontWeight: '700', marginBottom: '6px', paddingRight: '10px' }}>
-                    {r.fileName}
-                  </div>
-                  <div
-                    style={{
-                      fontFamily: 'monospace',
-                      fontWeight: '800',
-                      fontSize: '16px',
-                      color: getScoreColor(r.score),
-                    }}
-                  >
-                    ATS {r.score ?? '--'}
-                  </div>
-                </div>
-              ))}
+              {originalResumes.map(
+                (original) => {
+                  const updated =
+                    resumeHistory
+                      .filter(
+                        (r) =>
+                          r.isOptimized &&
+                          r.parentId ===
+                            original.id
+                      )
+                      .sort(
+                        (
+                          a,
+                          b
+                        ) =>
+                          Number(
+                            b.id
+                          ) -
+                          Number(
+                            a.id
+                          )
+                      )[0];
+
+                  const renderResumeTile =
+                    (
+                      r,
+                      typeLabel
+                    ) => (
+                      <div
+                        key={
+                          r.id
+                        }
+
+                        onClick={() =>
+                          selectResume(
+                            r.id
+                          )
+                        }
+
+                        style={{
+                          position:
+                            'relative',
+
+                          cursor:
+                            'pointer',
+
+                          background:
+                            r.id ===
+                            activeId
+                              ? '#123c38'
+                              : '#111827',
+
+                          border:
+                            r.id ===
+                            activeId
+                              ? '1px solid #2dd4bf'
+                              : '1px solid #263246',
+
+                          borderRadius:
+                            '12px',
+
+                          padding:
+                            '14px 40px 14px 16px',
+
+                          minWidth:
+                            '250px',
+
+                          flex:
+                            1,
+                        }}
+                      >
+                        {/* THREE DOT BUTTON */}
+
+                        <button
+                          onClick={(
+                            e
+                          ) => {
+                            e.stopPropagation();
+
+                            setOpenMenuId(
+                              openMenuId ===
+                                r.id
+                                ? null
+                                : r.id
+                            );
+                          }}
+
+                          title="More options"
+
+                          style={{
+                            position:
+                              'absolute',
+
+                            top:
+                              '6px',
+
+                            right:
+                              '6px',
+
+                            border:
+                              'none',
+
+                            background:
+                              'transparent',
+
+                            color:
+                              '#94a3b8',
+
+                            fontSize:
+                              '18px',
+
+                            lineHeight:
+                              1,
+
+                            cursor:
+                              'pointer',
+
+                            padding:
+                              '4px 6px',
+                          }}
+                        >
+                          ⋮
+                        </button>
+
+                        {/* MENU */}
+
+                        {openMenuId ===
+                          r.id && (
+                          <div
+                            onClick={(
+                              e
+                            ) =>
+                              e.stopPropagation()
+                            }
+
+                            style={{
+                              position:
+                                'absolute',
+
+                              top:
+                                '30px',
+
+                              right:
+                                '6px',
+
+                              background:
+                                '#1e293b',
+
+                              border:
+                                '1px solid #334155',
+
+                              borderRadius:
+                                '8px',
+
+                              overflow:
+                                'hidden',
+
+                              zIndex:
+                                20,
+
+                              minWidth:
+                                '140px',
+
+                              boxShadow:
+                                '0 10px 25px rgba(0,0,0,0.4)',
+                            }}
+                          >
+                            {/* DOWNLOAD ONLY AI */}
+
+                            {r.isOptimized && (
+                              <button
+                                onClick={() => {
+                                  downloadEntryPdf(
+                                    r
+                                  );
+
+                                  setOpenMenuId(
+                                    null
+                                  );
+                                }}
+
+                                style={{
+                                  display:
+                                    'block',
+
+                                  width:
+                                    '100%',
+
+                                  textAlign:
+                                    'left',
+
+                                  padding:
+                                    '10px 14px',
+
+                                  border:
+                                    'none',
+
+                                  background:
+                                    'transparent',
+
+                                  color:
+                                    '#e2e8f0',
+
+                                  fontSize:
+                                    '13px',
+
+                                  cursor:
+                                    'pointer',
+                                }}
+                              >
+                                Download
+                              </button>
+                            )}
+
+                            {/* RENAME */}
+
+                            <button
+                              onClick={() => {
+                                renameResume(
+                                  r.id,
+                                  r.fileName
+                                );
+
+                                setOpenMenuId(
+                                  null
+                                );
+                              }}
+
+                              style={{
+                                display:
+                                  'block',
+
+                                width:
+                                  '100%',
+
+                                textAlign:
+                                  'left',
+
+                                padding:
+                                  '10px 14px',
+
+                                border:
+                                  'none',
+
+                                background:
+                                  'transparent',
+
+                                color:
+                                  '#e2e8f0',
+
+                                fontSize:
+                                  '13px',
+
+                                cursor:
+                                  'pointer',
+                              }}
+                            >
+                              Rename
+                            </button>
+
+                            {/* DELETE */}
+
+                            <button
+                              onClick={() => {
+                                deleteResume(
+                                  r.id
+                                );
+
+                                setOpenMenuId(
+                                  null
+                                );
+                              }}
+
+                              style={{
+                                display:
+                                  'block',
+
+                                width:
+                                  '100%',
+
+                                textAlign:
+                                  'left',
+
+                                padding:
+                                  '10px 14px',
+
+                                border:
+                                  'none',
+
+                                background:
+                                  'transparent',
+
+                                color:
+                                  '#f87171',
+
+                                fontSize:
+                                  '13px',
+
+                                cursor:
+                                  'pointer',
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+
+                        {/* TYPE BADGE */}
+
+                        <div
+                          style={{
+                            display:
+                              'inline-block',
+
+                            fontSize:
+                              '10px',
+
+                            fontWeight:
+                              '800',
+
+                            color:
+                              r.isOptimized
+                                ? '#2dd4bf'
+                                : '#94a3b8',
+
+                            background:
+                              r.isOptimized
+                                ? 'rgba(45,212,191,0.12)'
+                                : 'rgba(148,163,184,0.10)',
+
+                            borderRadius:
+                              '5px',
+
+                            padding:
+                              '2px 6px',
+
+                            marginBottom:
+                              '6px',
+                          }}
+                        >
+                          {typeLabel}
+                        </div>
+
+                        {/* FILE NAME */}
+
+                        <div
+                          style={{
+                            fontSize:
+                              '13px',
+
+                            fontWeight:
+                              '700',
+
+                            marginBottom:
+                              '6px',
+
+                            paddingRight:
+                              '20px',
+
+                            wordBreak:
+                              'break-word',
+                          }}
+                        >
+                          {r.fileName}
+                        </div>
+
+                        {/* ATS */}
+
+                        <div
+                          style={{
+                            fontFamily:
+                              'monospace',
+
+                            fontWeight:
+                              '800',
+
+                            fontSize:
+                              '16px',
+
+                            color:
+                              getScoreColor(
+                                r.score
+                              ),
+                          }}
+                        >
+                          ATS{' '}
+                          {r.score ??
+                            '--'}
+                        </div>
+                      </div>
+                    );
+
+                  return (
+                    <div
+                      key={
+                        original.id
+                      }
+
+                      style={{
+                        display:
+                          'flex',
+
+                        gap:
+                          '12px',
+
+                        flexWrap:
+                          'wrap',
+
+                        padding:
+                          '12px',
+
+                        border:
+                          '1px solid #1e293b',
+
+                        borderRadius:
+                          '14px',
+
+                        background:
+                          'rgba(15,23,42,0.35)',
+                      }}
+                    >
+                      {/* ORIGINAL */}
+
+                      {renderResumeTile(
+                        original,
+                        'ORIGINAL'
+                      )}
+
+                      {/* UPDATED */}
+
+                      {updated ? (
+                        renderResumeTile(
+                          updated,
+                          'UPDATED / AI'
+                        )
+                      ) : (
+                        <div
+                          style={{
+                            flex:
+                              1,
+
+                            minWidth:
+                              '250px',
+
+                            border:
+                              '1px dashed #334155',
+
+                            borderRadius:
+                              '12px',
+
+                            padding:
+                              '14px 16px',
+
+                            color:
+                              '#64748b',
+
+                            display:
+                              'flex',
+
+                            alignItems:
+                              'center',
+
+                            justifyContent:
+                              'center',
+
+                            textAlign:
+                              'center',
+
+                            minHeight:
+                              '84px',
+
+                            fontSize:
+                              '13px',
+                          }}
+                        >
+                          Updated resume will appear here after “Fix with AI”.
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+              )}
+
+              {/* ADD RESUME */}
 
               <div
-                onClick={() => setShowUploadForm(true)}
+                onClick={() =>
+                  setShowUploadForm(
+                    true
+                  )
+                }
+
                 style={{
-                  cursor: 'pointer',
-                  border: '1px dashed #334155',
-                  borderRadius: '12px',
-                  padding: '14px 20px',
-                  minWidth: '140px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: '#2dd4bf',
-                  fontWeight: '700',
-                  fontSize: '13px',
+                  cursor:
+                    'pointer',
+
+                  border:
+                    '1px dashed #334155',
+
+                  borderRadius:
+                    '12px',
+
+                  padding:
+                    '14px 20px',
+
+                  maxWidth:
+                    '180px',
+
+                  display:
+                    'flex',
+
+                  alignItems:
+                    'center',
+
+                  justifyContent:
+                    'center',
+
+                  color:
+                    '#2dd4bf',
+
+                  fontWeight:
+                    '700',
+
+                  fontSize:
+                    '13px',
                 }}
               >
                 + Add resume
@@ -953,350 +2170,423 @@ export default function ResumePage() {
             </div>
           )}
 
-
           {/* =================================================
               UPLOAD CARD
           ================================================= */}
 
           {showUploadForm && (
-          <div
-            style={{
-              background: '#111827',
-
-              border:
-                '1px dashed #334155',
-
-              borderRadius: '18px',
-
-              padding: '38px',
-
-              textAlign: 'center',
-
-              marginBottom: '25px'
-            }}
-          >
-            <input
-              id="resume-upload"
-
-              type="file"
-
-              accept=".pdf,.docx"
-
-              onChange={handleUpload}
-
+            <div
               style={{
-                display: 'none'
-              }}
-            />
+                background:
+                  '#111827',
 
-            <label
-              htmlFor="resume-upload"
+                border:
+                  '1px dashed #334155',
 
-              style={{
-                display: 'inline-block',
+                borderRadius:
+                  '18px',
 
-                background: '#2dd4bf',
+                padding:
+                  '38px',
 
-                color: '#061018',
+                textAlign:
+                  'center',
 
-                padding: '15px 28px',
-
-                borderRadius: '11px',
-
-                fontSize: '17px',
-
-                fontWeight: '800',
-
-                cursor: 'pointer'
+                marginBottom:
+                  '25px'
               }}
             >
-              Upload Resume
-            </label>
+              <input
+                id="resume-upload"
 
+                type="file"
 
-            {fileName && (
-              <div
+                accept=".pdf,.docx"
+
+                onChange={
+                  handleUpload
+                }
+
                 style={{
-                  marginTop: '16px',
+                  display:
+                    'none'
+                }}
+              />
 
-                  color: '#cbd5e1',
+              <label
+                htmlFor="resume-upload"
 
-                  fontSize: '16px'
+                style={{
+                  display:
+                    'inline-block',
+
+                  background:
+                    '#2dd4bf',
+
+                  color:
+                    '#061018',
+
+                  padding:
+                    '15px 28px',
+
+                  borderRadius:
+                    '11px',
+
+                  fontSize:
+                    '17px',
+
+                  fontWeight:
+                    '800',
+
+                  cursor:
+                    'pointer'
                 }}
               >
-                {fileName}
-              </div>
-            )}
+                Upload Resume
+              </label>
 
-
-            {loading && (
-              <div
-                style={{
-                  marginTop: '15px',
-                  color: '#2dd4bf'
-                }}
-              >
-                Analyzing resume...
-              </div>
-            )}
-
-            {resumeHistory.length > 0 && (
-              <div style={{ marginTop: '16px' }}>
-                <button
-                  onClick={() => setShowUploadForm(false)}
+              {fileName && (
+                <div
                   style={{
-                    border: 'none',
-                    background: 'transparent',
-                    color: '#94a3b8',
-                    fontSize: '13px',
-                    textDecoration: 'underline',
-                    cursor: 'pointer',
+                    marginTop:
+                      '16px',
+
+                    color:
+                      '#cbd5e1',
+
+                    fontSize:
+                      '16px'
                   }}
                 >
-                  Cancel
-                </button>
-              </div>
-            )}
-          </div>
+                  {fileName}
+                </div>
+              )}
+
+              {loading && (
+                <div
+                  style={{
+                    marginTop:
+                      '15px',
+
+                    color:
+                      '#2dd4bf'
+                  }}
+                >
+                  Analyzing resume...
+                </div>
+              )}
+
+              {resumeHistory.length >
+                0 && (
+                <div
+                  style={{
+                    marginTop:
+                      '16px'
+                  }}
+                >
+                  <button
+                    onClick={() =>
+                      setShowUploadForm(
+                        false
+                      )
+                    }
+
+                    style={{
+                      border:
+                        'none',
+
+                      background:
+                        'transparent',
+
+                      color:
+                        '#94a3b8',
+
+                      fontSize:
+                        '13px',
+
+                      textDecoration:
+                        'underline',
+
+                      cursor:
+                        'pointer',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
           )}
 
-
           {/* =================================================
-              ORIGINAL ATS SCORE
+              ACTIVE ATS SCORE
           ================================================= */}
 
           {score !== null && (
             <div
               style={{
-                background: '#111827',
+                background:
+                  '#111827',
 
                 border:
                   '1px solid #263246',
 
-                borderRadius: '20px',
+                borderRadius:
+                  '20px',
 
-                padding: '35px',
+                padding:
+                  '35px',
 
-                marginBottom: '25px'
+                marginBottom:
+                  '25px'
               }}
             >
-
               <div
                 style={{
-                  display: 'flex',
-                  justifyContent: 'center'
+                  display:
+                    'flex',
+
+                  justifyContent:
+                    'center'
                 }}
               >
                 <ScoreCircle
-                  value={score}
-                  label="Original Resume"
+                  value={
+                    score
+                  }
+
+                  label={
+                    activeLabel
+                  }
                 />
               </div>
 
-
               <h3
                 style={{
-                  marginTop: '35px',
-                  marginBottom: '5px'
+                  marginTop:
+                    '35px',
+
+                  marginBottom:
+                    '5px'
                 }}
               >
                 ATS Breakdown
               </h3>
 
-
               <Breakdown
-                items={breakdown}
+                items={
+                  breakdown
+                }
               />
-
 
               {note && (
                 <p
                   style={{
-                    color: '#94a3b8',
+                    color:
+                      '#94a3b8',
 
-                    lineHeight: '1.6',
+                    lineHeight:
+                      '1.6',
 
-                    marginTop: '22px'
+                    marginTop:
+                      '22px'
                   }}
                 >
                   {note}
                 </p>
               )}
 
-
               {/* =================================================
                   FIX WITH AI
               ================================================= */}
 
-              <div
-                style={{
-                  textAlign: 'center',
-
-                  marginTop: '25px'
-                }}
-              >
-                <button
-                  onClick={fixWithAI}
-
-                  disabled={
-                    fixing ||
-                    loading
-                  }
-
+              {!activeEntry?.isOptimized && (
+                <div
                   style={{
-                    border: 'none',
+                    textAlign:
+                      'center',
 
-                    borderRadius: '12px',
-
-                    padding: '16px 32px',
-
-                    background:
-                      fixing
-                        ? '#475569'
-                        : '#2dd4bf',
-
-                    color: '#061018',
-
-                    fontSize: '18px',
-
-                    fontWeight: '800',
-
-                    cursor:
-                      fixing
-                        ? 'not-allowed'
-                        : 'pointer'
+                    marginTop:
+                      '25px'
                   }}
                 >
-                  {fixing
-                    ? 'Optimizing Resume...'
-                    : 'Fix with AI'}
-                </button>
+                  <button
+                    onClick={
+                      fixWithAI
+                    }
 
+                    disabled={
+                      fixing ||
+                      loading
+                    }
 
-                {/* =================================================
-                    OPTIMIZATION STATUS
-                ================================================= */}
-
-                {optimizationStatus && (
-                  <div
                     style={{
-                      marginTop: '15px',
+                      border:
+                        'none',
+
+                      borderRadius:
+                        '12px',
+
+                      padding:
+                        '16px 32px',
+
+                      background:
+                        fixing
+                          ? '#475569'
+                          : '#2dd4bf',
 
                       color:
+                        '#061018',
+
+                      fontSize:
+                        '18px',
+
+                      fontWeight:
+                        '800',
+
+                      cursor:
                         fixing
-                          ? '#2dd4bf'
-                          : '#94a3b8',
-
-                      fontSize: '14px',
-
-                      fontWeight: '600'
+                          ? 'not-allowed'
+                          : 'pointer'
                     }}
                   >
-                    {optimizationStatus}
-                  </div>
-                )}
+                    {fixing
+                      ? 'Optimizing Resume...'
+                      : 'Fix with AI'}
+                  </button>
 
-              </div>
+                  {optimizationStatus && (
+                    <div
+                      style={{
+                        marginTop:
+                          '15px',
 
+                        color:
+                          fixing
+                            ? '#2dd4bf'
+                            : '#94a3b8',
+
+                        fontSize:
+                          '14px',
+
+                        fontWeight:
+                          '600'
+                      }}
+                    >
+                      {
+                        optimizationStatus
+                      }
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
-
 
           {/* =================================================
               SCORE AFTER AI
           ================================================= */}
 
-          {updatedScore !== null && (
+          {updatedScore !==
+            null && (
             <div
               style={{
-                background: '#111827',
+                background:
+                  '#111827',
 
                 border:
                   '1px solid #263246',
 
-                borderRadius: '20px',
+                borderRadius:
+                  '20px',
 
-                padding: '35px',
+                padding:
+                  '35px',
 
-                marginBottom: '25px'
+                marginBottom:
+                  '25px'
               }}
             >
-
               <h2
                 style={{
-                  textAlign: 'center',
+                  textAlign:
+                    'center',
 
-                  marginTop: 0,
+                  marginTop:
+                    0,
 
-                  marginBottom: '35px'
+                  marginBottom:
+                    '35px'
                 }}
               >
                 ATS Score Improvement
               </h2>
 
-
               <div
                 style={{
-                  display: 'flex',
+                  display:
+                    'flex',
 
-                  justifyContent: 'center',
+                  justifyContent:
+                    'center',
 
-                  alignItems: 'center',
+                  alignItems:
+                    'center',
 
-                  gap: '50px',
+                  gap:
+                    '50px',
 
-                  flexWrap: 'wrap'
+                  flexWrap:
+                    'wrap'
                 }}
               >
-
-                {/* ORIGINAL */}
-
                 <ScoreCircle
-                  value={score}
+                  value={
+                    score
+                  }
+
                   label="Original Resume"
                 />
 
-
-                {/* ARROW */}
-
                 <div
                   style={{
-                    fontSize: '42px',
+                    fontSize:
+                      '42px',
 
-                    color: '#2dd4bf',
+                    color:
+                      '#2dd4bf',
 
-                    fontWeight: '800'
+                    fontWeight:
+                      '800'
                   }}
                 >
                   →
                 </div>
 
-
-                {/* UPDATED */}
-
                 <ScoreCircle
-                  value={updatedScore}
+                  value={
+                    updatedScore
+                  }
+
                   label="AI Optimized Resume"
                 />
-
               </div>
 
-
-              {/* =================================================
-                  SCORE CHANGE
-              ================================================= */}
-
-              {score !== null && (
+              {score !==
+                null && (
                 <div
                   style={{
-                    textAlign: 'center',
-                    marginTop: '28px'
+                    textAlign:
+                      'center',
+
+                    marginTop:
+                      '28px'
                   }}
                 >
-
                   <div
                     style={{
-                      display: 'inline-block',
+                      display:
+                        'inline-block',
 
                       padding:
                         '9px 18px',
@@ -1305,12 +2595,14 @@ export default function ResumePage() {
                         '25px',
 
                       background:
-                        updatedScore > score
+                        updatedScore >
+                        score
                           ? '#123c38'
                           : '#334155',
 
                       color:
-                        updatedScore > score
+                        updatedScore >
+                        score
                           ? '#2dd4bf'
                           : '#cbd5e1',
 
@@ -1318,35 +2610,29 @@ export default function ResumePage() {
                         '800'
                     }}
                   >
-                    {updatedScore > score
+                    {updatedScore >
+                    score
                       ? `+${updatedScore - score} ATS points`
                       : 'Original resume remains the best ATS version'}
                   </div>
-
                 </div>
               )}
 
-
-              {/* =================================================
-                  UPDATED BREAKDOWN
-              ================================================= */}
-
               <div
                 style={{
-                  marginTop: '35px'
+                  marginTop:
+                    '35px'
                 }}
               >
                 <h3>
                   Updated ATS Breakdown
                 </h3>
 
-
                 <Breakdown
                   items={
                     updatedBreakdown
                   }
                 />
-
 
                 {updatedNote && (
                   <p
@@ -1361,61 +2647,69 @@ export default function ResumePage() {
                         '20px'
                     }}
                   >
-                    {updatedNote}
+                    {
+                      updatedNote
+                    }
                   </p>
                 )}
-
               </div>
-
             </div>
           )}
-
 
           {/* =================================================
               WHAT AI CHANGED
           ================================================= */}
 
-          {changes.length > 0 && (
+          {changes.length >
+            0 && (
             <div
               style={{
-                background: '#111827',
+                background:
+                  '#111827',
 
                 border:
                   '1px solid #263246',
 
-                borderRadius: '20px',
+                borderRadius:
+                  '20px',
 
-                padding: '35px',
+                padding:
+                  '35px',
 
-                marginBottom: '25px'
+                marginBottom:
+                  '25px'
               }}
             >
-
               <h2
                 style={{
-                  marginTop: 0
+                  marginTop:
+                    0
                 }}
               >
                 What AI Changed
               </h2>
 
-
               <p
                 style={{
-                  color: '#94a3b8',
+                  color:
+                    '#94a3b8',
 
-                  marginBottom: '30px'
+                  marginBottom:
+                    '30px'
                 }}
               >
                 See exactly how your resume was improved.
               </p>
 
-
               {changes.map(
-                (change, index) => (
-
+                (
+                  change,
+                  index
+                ) => (
                   <div
-                    key={index}
+                    key={
+                      index
+                    }
 
                     style={{
                       marginBottom:
@@ -1428,32 +2722,29 @@ export default function ResumePage() {
                         '1px solid #263246'
                     }}
                   >
-
-                    {/* SECTION */}
-
                     <div
                       style={{
-                        color: '#2dd4bf',
+                        color:
+                          '#2dd4bf',
 
-                        fontWeight: '800',
+                        fontWeight:
+                          '800',
 
                         marginBottom:
                           '15px'
                       }}
                     >
-                      {change.section}
+                      {
+                        change.section
+                      }
                     </div>
 
-
-                    {/* BEFORE */}
-
                     <div
                       style={{
                         marginBottom:
                           '15px'
                       }}
                     >
-
                       <div
                         style={{
                           color:
@@ -1471,7 +2762,6 @@ export default function ResumePage() {
                       >
                         BEFORE
                       </div>
-
 
                       <div
                         style={{
@@ -1491,16 +2781,13 @@ export default function ResumePage() {
                             '1.6'
                         }}
                       >
-                        {change.original}
+                        {
+                          change.original
+                        }
                       </div>
-
                     </div>
 
-
-                    {/* AFTER */}
-
                     <div>
-
                       <div
                         style={{
                           color:
@@ -1518,7 +2805,6 @@ export default function ResumePage() {
                       >
                         AFTER
                       </div>
-
 
                       <div
                         style={{
@@ -1538,42 +2824,44 @@ export default function ResumePage() {
                             '1.6'
                         }}
                       >
-                        {change.revised}
+                        {
+                          change.revised
+                        }
                       </div>
-
                     </div>
-
                   </div>
                 )
               )}
-
             </div>
           )}
 
-
           {/* =================================================
-              UPDATED RESUME
+              UPDATED RESUME PREVIEW
           ================================================= */}
 
           {rewrittenResume && (
             <div
               style={{
-                background: '#111827',
+                background:
+                  '#111827',
 
                 border:
                   '1px solid #263246',
 
-                borderRadius: '20px',
+                borderRadius:
+                  '20px',
 
-                padding: '35px',
+                padding:
+                  '35px',
 
-                marginBottom: '25px'
+                marginBottom:
+                  '25px'
               }}
             >
-
               <div
                 style={{
-                  display: 'flex',
+                  display:
+                    'flex',
 
                   justifyContent:
                     'space-between',
@@ -1591,13 +2879,11 @@ export default function ResumePage() {
                     '25px'
                 }}
               >
-
-                {/* TITLE */}
-
                 <div>
                   <h2
                     style={{
-                      margin: 0,
+                      margin:
+                        0,
 
                       marginBottom:
                         '6px'
@@ -1608,7 +2894,8 @@ export default function ResumePage() {
 
                   <p
                     style={{
-                      margin: 0,
+                      margin:
+                        0,
 
                       color:
                         '#94a3b8'
@@ -1617,11 +2904,6 @@ export default function ResumePage() {
                     Your highest-scoring AI-optimized resume
                   </p>
                 </div>
-
-
-                {/* =================================================
-                    DOWNLOAD PDF
-                ================================================= */}
 
                 <button
                   onClick={
@@ -1633,7 +2915,8 @@ export default function ResumePage() {
                   }
 
                   style={{
-                    border: 'none',
+                    border:
+                      'none',
 
                     borderRadius:
                       '11px',
@@ -1660,13 +2943,7 @@ export default function ResumePage() {
                 >
                   Download Updated Resume PDF
                 </button>
-
               </div>
-
-
-              {/* =================================================
-                  UPDATED RESUME PREVIEW
-              ================================================= */}
 
               <div
                 style={{
@@ -1698,9 +2975,10 @@ export default function ResumePage() {
                     'auto'
                 }}
               >
-                {rewrittenResume}
+                {
+                  rewrittenResume
+                }
               </div>
-
             </div>
           )}
 

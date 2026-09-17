@@ -178,11 +178,19 @@ def _fallback_score(
 
     jd_lower = job_description.lower()
 
+    has_jd = bool(job_description.strip())
+
+    keyword_label = (
+        "JD keyword coverage"
+        if has_jd
+        else "Keyword coverage"
+    )
+
     # -----------------------------------------------------
     # JD-SPECIFIC KEYWORD COVERAGE
     # -----------------------------------------------------
 
-    if job_description.strip():
+    if has_jd:
 
         # Extract useful words from JD.
         jd_words = re.findall(
@@ -427,7 +435,7 @@ def _fallback_score(
 
     breakdown = [
         {
-            "label": "JD keyword coverage",
+            "label": keyword_label,
             "value": keyword_score,
             "tone": (
                 "teal"
@@ -466,7 +474,7 @@ def _fallback_score(
 
     note = (
         "Resume scored against the supplied job description."
-        if job_description.strip()
+        if has_jd
         else
         "Resume analyzed using local ATS rules."
     )
@@ -597,6 +605,8 @@ def score_resume(
             "Could not extract text from resume."
         )
 
+    has_jd = bool(job_description.strip())
+
 
     # -----------------------------------------------------
     # NO GEMINI
@@ -618,7 +628,7 @@ def score_resume(
     # JD-SPECIFIC PROMPT
     # -----------------------------------------------------
 
-    if job_description.strip():
+    if has_jd:
 
         scoring_context = f"""
 JOB DESCRIPTION:
@@ -646,6 +656,8 @@ Pay special attention to:
 10. Recruiter searchability
 """
 
+        keyword_label = "JD keyword coverage"
+
     else:
 
         scoring_context = """
@@ -655,6 +667,8 @@ Score the resume for general ATS
 compatibility and recruiter readability.
 """
 
+        keyword_label = "Keyword coverage"
+
 
     prompt = f"""
 You are an expert ATS scoring engine and senior recruiter.
@@ -663,16 +677,18 @@ Score the resume HONESTLY from 0 to 100.
 
 {scoring_context}
 
-Use these four categories:
+Use these four categories, using this EXACT label for
+the first category: "{keyword_label}"
 
-1. JD keyword coverage
+1. {keyword_label}
 2. Formatting & parseability
 3. Impact phrasing
 4. Section structure
 
-For a JD-specific score, JD keyword coverage should
+For a JD-specific score, {keyword_label.lower()} should
 measure actual alignment with the supplied JD rather
-than generic technology keywords.
+than generic technology keywords. Without a JD, it should
+measure general technology/domain keyword strength.
 
 Do NOT give a high score merely because the resume
 looks professional.
@@ -692,7 +708,7 @@ EXACT FORMAT:
   "score": 86,
   "breakdown": [
     {{
-      "label": "JD keyword coverage",
+      "label": "{keyword_label}",
       "value": 88,
       "tone": "teal"
     }},
@@ -939,18 +955,16 @@ def tailor_resume(
             "GEMINI_API_KEY is not configured."
         )
 
-    if not job_description.strip():
-
-        raise RuntimeError(
-            "A job description is required for resume tailoring."
-        )
+    has_jd = bool(job_description.strip())
 
 
     # =====================================================
-    # ONE-SHOT JD ANALYSIS + RESUME OPTIMIZATION
+    # PROMPT — JD-SPECIFIC vs GENERAL
     # =====================================================
 
-    prompt = f"""
+    if has_jd:
+
+        prompt = f"""
 You are an elite ATS resume optimizer, senior recruiter,
 and professional resume writer.
 
@@ -1196,13 +1210,195 @@ Produce the strongest truthful JD-matched resume
 you can in this response.
 """
 
+    else:
+
+        # -------------------------------------------------
+        # GENERAL OPTIMIZATION (no JD supplied)
+        # -------------------------------------------------
+
+        prompt = f"""
+You are an elite ATS resume optimizer, senior recruiter,
+and professional resume writer.
+
+You will receive an original resume with NO specific
+job description attached.
+
+Your job is to create the strongest truthful, general-
+purpose ATS-optimized version of the resume in ONE
+generation.
+
+TARGET:
+
+Aim for a general ATS compatibility score of 85+.
+
+Do NOT wait for another attempt.
+
+Perform the entire optimization now.
+
+=========================================================
+STEP 1 — ANALYZE THE ORIGINAL RESUME
+=========================================================
+
+Identify:
+
+- Existing relevant experience
+- Existing skills
+- Existing technologies
+- Existing projects
+- Existing certifications
+- Existing achievements
+- Existing responsibilities
+- Weak or vague phrasing
+- Missing but implied technical keywords
+
+=========================================================
+STEP 2 — OPTIMIZE THE RESUME
+=========================================================
+
+Rewrite the resume so that it is stronger, clearer,
+and more ATS-friendly overall.
+
+Improve:
+
+- Professional summary
+- Relevant skills
+- Technical skills
+- Experience bullets
+- Project descriptions
+- Action verbs
+- General ATS keyword coverage
+- Recruiter readability
+- Section structure
+- Conciseness
+- Impact
+- Searchability
+
+Do NOT simply create a keyword list.
+
+Do NOT keyword stuff.
+
+=========================================================
+CRITICAL TRUTHFULNESS RULE
+=========================================================
+
+NEVER invent information.
+
+Do NOT invent:
+
+- Companies
+- Job titles
+- Employment dates
+- Education
+- Certifications
+- Technologies
+- Tools
+- Projects
+- Clients
+- Achievements
+- Responsibilities
+- Metrics
+- Numbers
+- Awards
+- Experience of any kind
+
+You may improve wording and positioning of
+existing information.
+
+You may make an existing skill more visible.
+
+You may combine existing truthful information
+into stronger wording.
+
+You may reorder information for relevance.
+
+=========================================================
+FIRST-GENERATION QUALITY REQUIREMENT
+=========================================================
+
+This is the ONLY resume generation attempt.
+
+Therefore, do NOT produce a minimal rewrite.
+
+Make the first generated version as complete,
+specific, and ATS-friendly as possible.
+
+=========================================================
+FORMATTING
+=========================================================
+
+The rewritten resume must be PLAIN TEXT ONLY.
+
+Do NOT use:
+
+- Markdown
+- #
+- ##
+- ###
+- **
+- *
+- __
+- Tables
+- Decorative symbols
+
+Section titles should be plain uppercase text:
+
+PROFESSIONAL SUMMARY
+
+TECHNICAL SKILLS
+
+PROFESSIONAL EXPERIENCE
+
+PROJECTS
+
+EDUCATION
+
+CERTIFICATIONS
+
+Use "-" for bullet points.
+
+=========================================================
+ORIGINAL RESUME
+=========================================================
+
+{resume_text[:14000]}
+
+=========================================================
+OUTPUT
+=========================================================
+
+Return ONLY valid JSON.
+
+Use EXACTLY this structure:
+
+{{
+  "summary": "Short explanation of the major improvements.",
+  "changes": [
+    {{
+      "section": "Professional Summary",
+      "original": "Original text",
+      "revised": "Improved text"
+    }}
+  ],
+  "rewritten_resume": "Complete final optimized resume in plain text."
+}}
+
+Remember:
+
+This is a ONE-SHOT optimization.
+
+Produce the strongest truthful resume you can in
+this response.
+"""
+
 
     # =====================================================
     # GENERATE ONCE
     # =====================================================
 
     print(
-        "Generating one-shot JD-tailored resume..."
+        "Generating one-shot tailored resume..."
+        if has_jd else
+        "Generating one-shot general resume optimization..."
     )
 
     response = _generate_with_fallback(
@@ -1221,6 +1417,8 @@ you can in this response.
     summary = result.get(
         "summary",
         "Resume optimized for the supplied job description."
+        if has_jd else
+        "Resume optimized for general ATS compatibility."
     )
 
     changes = result.get(
@@ -1249,11 +1447,13 @@ you can in this response.
 
 
     # =====================================================
-    # JD-SPECIFIC ATS RESCORE
+    # ATS RESCORE (JD-specific if JD was supplied)
     # =====================================================
 
     print(
         "Calculating JD-specific ATS score..."
+        if has_jd else
+        "Calculating general ATS score..."
     )
 
     updated_score_result = score_resume(
@@ -1328,7 +1528,9 @@ you can in this response.
             updated_note,
 
         "download_filename":
-            "tailored_resume.pdf",
+            "tailored_resume.pdf"
+            if has_jd else
+            "updated_resume.pdf",
 
         "download_base64":
             download_base64,
