@@ -1,41 +1,176 @@
-import os
-import requests
+from datetime import datetime
+from typing import Any
 
-ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID")
-ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY")
-ADZUNA_URL = "https://api.adzuna.com/v1/api/jobs/in/search/1"  # "in" = India
+from services.job_sources.adzuna import fetch_adzuna_jobs
+from services.job_sources.greenhouse import fetch_greenhouse_jobs
+from services.job_sources.lever import fetch_lever_jobs
 
 
-def fetch_jobs(query: str = "software developer", location: str = "India") -> list[dict]:
+def normalize_job(raw_job: dict[str, Any]) -> dict[str, Any]:
     """
-    Pulls live listings from Adzuna's free tier. Returns [] if no API keys are
-    configured yet, so the frontend can fall back to its own demo data.
+    Convert jobs from different sources into one common format.
     """
-    if not (ADZUNA_APP_ID and ADZUNA_APP_KEY):
-        return []
 
-    params = {
-        "app_id": ADZUNA_APP_ID,
-        "app_key": ADZUNA_APP_KEY,
-        "what": query,
-        "where": location,
-        "results_per_page": 10,
+    external_id = (
+        raw_job.get("external_id")
+        or raw_job.get("id")
+        or raw_job.get("job_id")
+        or raw_job.get("requisition_id")
+        or raw_job.get("posting_id")
+        or raw_job.get("slug")
+        or raw_job.get("url")
+        or raw_job.get("apply_url")
+    )
+
+    title = (
+        raw_job.get("title")
+        or raw_job.get("name")
+        or "Unknown Role"
+    )
+
+    company = (
+        raw_job.get("company")
+        or raw_job.get("company_name")
+        or raw_job.get("organization")
+        or "Unknown Company"
+    )
+
+    location = (
+        raw_job.get("location")
+        or raw_job.get("location_name")
+        or ""
+    )
+
+    description = (
+        raw_job.get("description")
+        or raw_job.get("content")
+        or ""
+    )
+
+    source = (
+        raw_job.get("source")
+        or "Unknown"
+    )
+
+    source_url = (
+        raw_job.get("source_url")
+        or raw_job.get("url")
+        or raw_job.get("apply_url")
+        or ""
+    )
+
+    apply_url = (
+        raw_job.get("apply_url")
+        or raw_job.get("url")
+        or raw_job.get("source_url")
+        or ""
+    )
+
+    posted_at = raw_job.get("posted_at")
+
+    automation_supported = bool(
+        raw_job.get("automation_supported", False)
+    )
+
+    return {
+        "external_id": str(external_id or ""),
+        "title": title,
+        "company": company,
+        "location": location,
+        "description": description,
+        "source": source,
+        "source_url": source_url,
+        "apply_url": apply_url,
+        "posted_at": posted_at,
+        "automation_supported": automation_supported,
+        "discovered_at": datetime.utcnow().isoformat(),
     }
-    res = requests.get(ADZUNA_URL, params=params, timeout=10)
-    res.raise_for_status()
-    results = res.json().get("results", [])
 
-    return [
-        {
-            "id": job["id"],
-            "title": job["title"],
-            "company": job.get("company", {}).get("display_name", "Unknown"),
-            "meta": f"{job.get('location', {}).get('display_name', '')} · {job.get('salary_is_predicted', '')}",
-            "match": 0,  # TODO: compute against the user's stored resume via ats_scorer
-            "source": "Adzuna",
-            "description": job.get("description", ""),
-            "apply_url": job.get("redirect_url"),
-            "external": False,
-        }
-        for job in results
-    ]
+
+def fetch_jobs(
+    query: str = "software developer",
+    location: str = "India",
+    greenhouse_boards: list[str] | None = None,
+    lever_sites: list[str] | None = None,
+) -> list[dict]:
+    jobs: list[dict] = []
+
+    # ---------------------------------------------------------
+    # ADZUNA
+    # ---------------------------------------------------------
+    try:
+        adzuna_jobs = fetch_adzuna_jobs(
+            query=query,
+            location=location,
+        )
+
+        if adzuna_jobs:
+            jobs.extend(adzuna_jobs)
+
+    except Exception as exc:
+        print(f"[job_aggregator] Adzuna error: {exc}")
+
+    # ---------------------------------------------------------
+    # GREENHOUSE
+    # ---------------------------------------------------------
+    for board in greenhouse_boards or []:
+        try:
+            greenhouse_jobs = fetch_greenhouse_jobs(board)
+
+            if greenhouse_jobs:
+                jobs.extend(greenhouse_jobs)
+
+        except Exception as exc:
+            print(
+                f"[job_aggregator] "
+                f"Greenhouse {board} error: {exc}"
+            )
+
+    # ---------------------------------------------------------
+    # LEVER
+    # ---------------------------------------------------------
+    for site in lever_sites or []:
+        try:
+            lever_jobs = fetch_lever_jobs(site)
+
+            if lever_jobs:
+                jobs.extend(lever_jobs)
+
+        except Exception as exc:
+            print(
+                f"[job_aggregator] "
+                f"Lever {site} error: {exc}"
+            )
+
+    # ---------------------------------------------------------
+    # NORMALIZE + REMOVE DUPLICATES
+    # ---------------------------------------------------------
+    normalized_jobs: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    for raw_job in jobs:
+        try:
+            job = normalize_job(raw_job)
+
+            # Ignore completely invalid records.
+            if not job["external_id"] and not job["apply_url"]:
+                continue
+
+            unique_key = (
+                job["source"].lower(),
+                job["external_id"] or job["apply_url"],
+            )
+
+            if unique_key in seen:
+                continue
+
+            seen.add(unique_key)
+            normalized_jobs.append(job)
+
+        except Exception as exc:
+            print(
+                f"[job_aggregator] "
+                f"Could not normalize job: {exc}"
+            )
+
+    return normalized_jobs

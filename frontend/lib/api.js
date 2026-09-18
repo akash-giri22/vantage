@@ -1,8 +1,12 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8000';
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8000';
 
 async function request(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
     ...options,
   });
 
@@ -11,6 +15,7 @@ async function request(path, options = {}) {
 
     try {
       const data = await res.json();
+
       if (data && data.detail) {
         message = data.detail;
       }
@@ -27,13 +32,17 @@ async function request(path, options = {}) {
 export const api = {
   // Uploads a resume file and gets back the parsed ATS score + breakdown.
   uploadResume: async (formData) => {
-    const res = await fetch(`${API_BASE}/resume/upload`, { method: 'POST', body: formData });
+    const res = await fetch(`${API_BASE}/resume/upload`, {
+      method: 'POST',
+      body: formData,
+    });
 
     if (!res.ok) {
       let message = `Something went wrong (${res.status}).`;
 
       try {
         const data = await res.json();
+
         if (data && data.detail) {
           message = data.detail;
         }
@@ -51,15 +60,37 @@ export const api = {
   tailorResume: (resumeText, jobDescription) =>
     request('/resume/tailor', {
       method: 'POST',
-      body: JSON.stringify({ resume_text: resumeText, job_description: jobDescription }),
+      body: JSON.stringify({
+        resume_text: resumeText,
+        job_description: jobDescription,
+      }),
     }),
 
-  // Fetches matched job listings for the logged-in user.
-  getJobs: (query = '') => request(`/jobs${query ? `?q=${encodeURIComponent(query)}` : ''}`),
+  // Fetches matched job listings.
+  getJobs: (query = '') =>
+    request(
+      `/jobs${query ? `?q=${encodeURIComponent(query)}` : ''}`
+    ),
 
-  // Queues a semi-auto apply for a given job id.
-  applyToJob: (jobId) => request(`/jobs/${jobId}/apply`, { method: 'POST' }),
+  // Queues an application for a given job.
+  applyToJob: (jobId, resumeName = '') =>
+    request(`/jobs/${jobId}/apply`, {
+      method: 'POST',
+      body: JSON.stringify({
+        resume_name: resumeName,
+      }),
+    }),
 
   // Fetches the user's application tracker rows.
-  getApplications: () => request('/applications'),
+  getApplications: () =>
+    request('/applications'),
+
+  // Updates application tracker status.
+  updateApplicationStatus: (applicationId, status) =>
+    request(`/applications/${applicationId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        status,
+      }),
+    }),
 };
