@@ -1,41 +1,58 @@
-import os
-import requests
+from datetime import datetime, timezone
+from typing import Any
 
-ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID")
-ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY")
-ADZUNA_URL = "https://api.adzuna.com/v1/api/jobs/in/search/1"  # "in" = India
+from services.job_sources.adzuna import fetch_adzuna_jobs
+from services.job_sources.greenhouse import fetch_greenhouse_jobs
+from services.job_sources.lever import fetch_lever_jobs
 
-
-def fetch_jobs(query: str = "software developer", location: str = "India") -> list[dict]:
-    """
-    Pulls live listings from Adzuna's free tier. Returns [] if no API keys are
-    configured yet, so the frontend can fall back to its own demo data.
-    """
-    if not (ADZUNA_APP_ID and ADZUNA_APP_KEY):
-        return []
-
-    params = {
-        "app_id": ADZUNA_APP_ID,
-        "app_key": ADZUNA_APP_KEY,
-        "what": query,
-        "where": location,
-        "results_per_page": 10,
+def normalize_job(raw_job: dict[str, Any]) -> dict[str, Any]:
+    external_id = (
+        raw_job.get("external_id") or raw_job.get("id") or raw_job.get("job_id")
+        or raw_job.get("requisition_id") or raw_job.get("posting_id")
+        or raw_job.get("slug") or raw_job.get("url") or raw_job.get("apply_url")
+    )
+    return {
+        "external_id": str(external_id or ""),
+        "title": raw_job.get("title") or raw_job.get("name") or "Unknown Role",
+        "company": raw_job.get("company") or raw_job.get("company_name") or raw_job.get("organization") or "Unknown Company",
+        "location": raw_job.get("location") or raw_job.get("location_name") or "",
+        "description": raw_job.get("description") or raw_job.get("content") or "",
+        "source": raw_job.get("source") or "Unknown",
+        "source_url": raw_job.get("source_url") or raw_job.get("url") or raw_job.get("apply_url") or "",
+        "apply_url": raw_job.get("apply_url") or raw_job.get("url") or raw_job.get("source_url") or "",
+        "posted_at": raw_job.get("posted_at"),
+        "automation_supported": bool(raw_job.get("automation_supported", False)),
+        "discovered_at": datetime.now(timezone.utc).isoformat(),
     }
-    res = requests.get(ADZUNA_URL, params=params, timeout=10)
-    res.raise_for_status()
-    results = res.json().get("results", [])
 
-    return [
-        {
-            "id": job["id"],
-            "title": job["title"],
-            "company": job.get("company", {}).get("display_name", "Unknown"),
-            "meta": f"{job.get('location', {}).get('display_name', '')} · {job.get('salary_is_predicted', '')}",
-            "match": 0,  # TODO: compute against the user's stored resume via ats_scorer
-            "source": "Adzuna",
-            "description": job.get("description", ""),
-            "apply_url": job.get("redirect_url"),
-            "external": False,
-        }
-        for job in results
-    ]
+def fetch_jobs(query="software developer", location="India", greenhouse_boards=None, lever_sites=None):
+    jobs = []
+    try:
+        jobs.extend(fetch_adzuna_jobs(query=query, location=location) or [])
+    except Exception as exc:
+        print(f"[job_aggregator] Adzuna: {exc}")
+
+    for board in greenhouse_boards or []:
+        try:
+            jobs.extend(fetch_greenhouse_jobs(board) or [])
+        except Exception as exc:
+            print(f"[job_aggregator] Greenhouse {board}: {exc}")
+
+    for site in lever_sites or []:
+        try:
+            jobs.extend(fetch_lever_jobs(site) or [])
+        except Exception as exc:
+            print(f"[job_aggregator] Lever {site}: {exc}")
+
+    normalized, seen = [], set()
+    for raw in jobs:
+        try:
+            job = normalize_job(raw)
+            key = (job["source"].lower(), job["external_id"] or job["apply_url"])
+            if not key[1] or key in seen:
+                continue
+            seen.add(key)
+            normalized.append(job)
+        except Exception as exc:
+            print(f"[job_aggregator] normalize error: {exc}")
+    return normalized
