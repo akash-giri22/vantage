@@ -8,7 +8,6 @@ from services.job_sources.public_boards import (
     fetch_arbeitnow_jobs,
     fetch_himalayas_jobs,
     fetch_jobicy_jobs,
-    fetch_remoteok_jobs,
 )
 
 
@@ -86,9 +85,6 @@ def _source_jobs(
             ]
             if lever_sites
             else fetch_lever_jobs(limit=60)
-        ),
-        "Remote OK": lambda: fetch_remoteok_jobs(
-            query=query, location=location, limit=40
         ),
         "Himalayas": lambda: fetch_himalayas_jobs(
             query=query, location=location, limit=20
