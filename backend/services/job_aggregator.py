@@ -1,15 +1,22 @@
 from datetime import datetime
 from typing import Any
 
-from services.job_sources.adzuna import fetch_adzuna_jobs
-from services.job_sources.greenhouse import fetch_greenhouse_jobs
-from services.job_sources.lever import fetch_lever_jobs
+from services.job_sources.adzuna import (
+    fetch_adzuna_jobs,
+)
+
+from services.job_sources.greenhouse import (
+    fetch_greenhouse_jobs,
+)
+
+from services.job_sources.lever import (
+    fetch_lever_jobs,
+)
 
 
-def normalize_job(raw_job: dict[str, Any]) -> dict[str, Any]:
-    """
-    Convert jobs from different sources into one common format.
-    """
+def normalize_job(
+    raw_job: dict[str, Any]
+) -> dict[str, Any]:
 
     external_id = (
         raw_job.get("external_id")
@@ -66,24 +73,51 @@ def normalize_job(raw_job: dict[str, Any]) -> dict[str, Any]:
         or ""
     )
 
-    posted_at = raw_job.get("posted_at")
+    posted_at = (
+        raw_job.get("posted_at")
+        or ""
+    )
 
     automation_supported = bool(
-        raw_job.get("automation_supported", False)
+        raw_job.get(
+            "automation_supported",
+            False,
+        )
     )
 
     return {
-        "external_id": str(external_id or ""),
-        "title": title,
-        "company": company,
-        "location": location,
-        "description": description,
-        "source": source,
-        "source_url": source_url,
-        "apply_url": apply_url,
-        "posted_at": posted_at,
-        "automation_supported": automation_supported,
-        "discovered_at": datetime.utcnow().isoformat(),
+        "external_id":
+            str(external_id or ""),
+
+        "title":
+            title,
+
+        "company":
+            company,
+
+        "location":
+            location,
+
+        "description":
+            description,
+
+        "source":
+            source,
+
+        "source_url":
+            source_url,
+
+        "apply_url":
+            apply_url,
+
+        "posted_at":
+            posted_at,
+
+        "automation_supported":
+            automation_supported,
+
+        "discovered_at":
+            datetime.utcnow().isoformat(),
     }
 
 
@@ -93,84 +127,176 @@ def fetch_jobs(
     greenhouse_boards: list[str] | None = None,
     lever_sites: list[str] | None = None,
 ) -> list[dict]:
+
     jobs: list[dict] = []
 
-    # ---------------------------------------------------------
+    # =====================================================
     # ADZUNA
-    # ---------------------------------------------------------
+    # =====================================================
+
     try:
         adzuna_jobs = fetch_adzuna_jobs(
             query=query,
             location=location,
         )
 
-        if adzuna_jobs:
-            jobs.extend(adzuna_jobs)
+        jobs.extend(
+            adzuna_jobs or []
+        )
+
+        print(
+            f"[aggregator] Adzuna: "
+            f"{len(adzuna_jobs or [])}"
+        )
 
     except Exception as exc:
-        print(f"[job_aggregator] Adzuna error: {exc}")
+        print(
+            f"[aggregator] "
+            f"Adzuna error: {exc}"
+        )
 
-    # ---------------------------------------------------------
+    # =====================================================
     # GREENHOUSE
-    # ---------------------------------------------------------
-    for board in greenhouse_boards or []:
-        try:
-            greenhouse_jobs = fetch_greenhouse_jobs(board)
+    # =====================================================
 
-            if greenhouse_jobs:
-                jobs.extend(greenhouse_jobs)
+    try:
 
-        except Exception as exc:
-            print(
-                f"[job_aggregator] "
-                f"Greenhouse {board} error: {exc}"
+        # IMPORTANT FIX:
+        # Previously None meant the loop never ran.
+        if greenhouse_boards:
+
+            for board in greenhouse_boards:
+                board_jobs = (
+                    fetch_greenhouse_jobs(
+                        board_token=board,
+                        limit=25,
+                    )
+                )
+
+                jobs.extend(
+                    board_jobs or []
+                )
+
+        else:
+
+            greenhouse_jobs = (
+                fetch_greenhouse_jobs(
+                    limit=50,
+                )
             )
 
-    # ---------------------------------------------------------
+            jobs.extend(
+                greenhouse_jobs or []
+            )
+
+        print(
+            "[aggregator] Greenhouse loaded"
+        )
+
+    except Exception as exc:
+        print(
+            f"[aggregator] "
+            f"Greenhouse error: {exc}"
+        )
+
+    # =====================================================
     # LEVER
-    # ---------------------------------------------------------
-    for site in lever_sites or []:
-        try:
-            lever_jobs = fetch_lever_jobs(site)
+    # =====================================================
 
-            if lever_jobs:
-                jobs.extend(lever_jobs)
+    try:
 
-        except Exception as exc:
-            print(
-                f"[job_aggregator] "
-                f"Lever {site} error: {exc}"
+        # IMPORTANT FIX:
+        # Old aggregator was passing site into the
+        # `limit` argument of fetch_lever_jobs().
+        if lever_sites:
+
+            for site in lever_sites:
+
+                site_jobs = (
+                    fetch_lever_jobs(
+                        company=site,
+                        limit=25,
+                    )
+                )
+
+                jobs.extend(
+                    site_jobs or []
+                )
+
+        else:
+
+            lever_jobs = (
+                fetch_lever_jobs(
+                    limit=50,
+                )
             )
 
-    # ---------------------------------------------------------
-    # NORMALIZE + REMOVE DUPLICATES
-    # ---------------------------------------------------------
+            jobs.extend(
+                lever_jobs or []
+            )
+
+        print(
+            "[aggregator] Lever loaded"
+        )
+
+    except Exception as exc:
+        print(
+            f"[aggregator] "
+            f"Lever error: {exc}"
+        )
+
+    # =====================================================
+    # NORMALIZE + DEDUPE
+    # =====================================================
+
     normalized_jobs: list[dict] = []
-    seen: set[tuple[str, str]] = set()
+
+    seen: set[
+        tuple[str, str]
+    ] = set()
 
     for raw_job in jobs:
-        try:
-            job = normalize_job(raw_job)
 
-            # Ignore completely invalid records.
-            if not job["external_id"] and not job["apply_url"]:
+        try:
+
+            job = normalize_job(
+                raw_job
+            )
+
+            if (
+                not job["external_id"]
+                and not job["apply_url"]
+            ):
                 continue
 
             unique_key = (
                 job["source"].lower(),
-                job["external_id"] or job["apply_url"],
+                job["external_id"]
+                or job["apply_url"],
             )
 
             if unique_key in seen:
                 continue
 
-            seen.add(unique_key)
-            normalized_jobs.append(job)
+            seen.add(
+                unique_key
+            )
+
+            normalized_jobs.append(
+                job
+            )
 
         except Exception as exc:
+
             print(
-                f"[job_aggregator] "
-                f"Could not normalize job: {exc}"
+                "[aggregator] "
+                "Could not normalize "
+                f"job: {exc}"
             )
+
+    print(
+        "[aggregator] TOTAL "
+        f"{len(normalized_jobs)} jobs"
+    )
 
     return normalized_jobs
