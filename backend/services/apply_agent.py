@@ -1,7 +1,10 @@
+import os
+
 from services.job_store import (
     get_job,
     create_application,
     update_application,
+    get_daily_application_count,
 )
 from services.notification_service import (
     notify_manual_action,
@@ -9,12 +12,7 @@ from services.notification_service import (
 )
 
 
-MANUAL_ONLY_SOURCES = {
-    "adzuna",
-    "linkedin",
-    "naukri",
-    "indeed",
-}
+DAILY_APPLY_CAP = int(os.getenv("DAILY_APPLY_CAP", "7"))
 
 
 def process_job_application(
@@ -29,38 +27,47 @@ def process_job_application(
             "message": "Job not found.",
         }
 
-    application_id = create_application(
-        job_id=job_id,
-        status="applying",
-        apply_mode="automatic"
-        if job.get("automation_supported")
-        else "manual",
-        resume_name=resume_name,
-    )
+    used_today = get_daily_application_count()
+
+    if used_today >= DAILY_APPLY_CAP:
+        return {
+            "status": "daily_cap_reached",
+            "daily_apply_cap": DAILY_APPLY_CAP,
+            "applies_today": used_today,
+            "message": (
+                f"Daily application cap of {DAILY_APPLY_CAP} "
+                "has been reached."
+            ),
+        }
 
     source = (job.get("source") or "").lower()
     apply_url = job.get("apply_url") or ""
 
     if not apply_url:
-        update_application(
-            application_id=application_id,
-            status="failed",
-            error_message="No application URL available.",
-        )
-
         return {
             "status": "failed",
-            "application_id": application_id,
             "message": "No application URL available.",
         }
 
-    if source in MANUAL_ONLY_SOURCES or not job.get("automation_supported"):
-        reason = "This job source requires manual application."
+    application_id = create_application(
+        job_id=job_id,
+        status="applying",
+        apply_mode="automatic" if job.get("automation_supported") else "manual",
+        resume_name=resume_name,
+    )
+
+    if not job.get("automation_supported"):
+        reason = (
+            "This source does not expose a supported candidate "
+            "application API to Vantage. Open the original application "
+            "page to submit the application."
+        )
 
         update_application(
             application_id=application_id,
             status="manual_action_required",
-            action_required=reason,
+            error_message=reason,
+            action_required=True,
         )
 
         notify_manual_action(
@@ -74,48 +81,31 @@ def process_job_application(
             "status": "manual_action_required",
             "application_id": application_id,
             "apply_url": apply_url,
+            "applies_today": used_today + 1,
+            "daily_apply_cap": DAILY_APPLY_CAP,
             "message": reason,
         }
 
-    if source in {"greenhouse", "lever"}:
-        # Actual company-specific field submission will be connected next.
-        # For now we deliberately do NOT falsely claim the application succeeded.
-        reason = (
-            f"{job['source']} application endpoint detected, "
-            "but employer-specific application fields still need to be mapped."
-        )
-
-        update_application(
-            application_id=application_id,
-            status="ready_to_apply",
-            action_required=reason,
-        )
-
-        return {
-            "status": "ready_to_apply",
-            "application_id": application_id,
-            "apply_url": apply_url,
-            "message": reason,
-        }
-
-    reason = "No supported automatic application method is configured."
+    # This branch is intentionally only enabled for a source that has
+    # a real candidate-submission integration. It must never claim success
+    # merely because an application page exists.
+    reason = (
+        f"{job['source']} is marked automation-capable, but no "
+        "candidate submission adapter is configured yet."
+    )
 
     update_application(
         application_id=application_id,
-        status="manual_action_required",
-        action_required=reason,
-    )
-
-    notify_manual_action(
-        title=job["title"],
-        company=job["company"],
-        apply_url=apply_url,
-        reason=reason,
+        status="ready_to_apply",
+        error_message=reason,
+        action_required=True,
     )
 
     return {
-        "status": "manual_action_required",
+        "status": "ready_to_apply",
         "application_id": application_id,
         "apply_url": apply_url,
+        "applies_today": used_today + 1,
+        "daily_apply_cap": DAILY_APPLY_CAP,
         "message": reason,
     }
