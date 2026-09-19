@@ -47,52 +47,6 @@ def _matches_query(job: dict, query: str, location: str) -> bool:
     return query_ok and location_ok
 
 
-def fetch_remoteok_jobs(
-    query: str = "software developer",
-    location: str = "India",
-    limit: int = 40,
-) -> list[dict]:
-    try:
-        response = requests.get(
-            "https://remoteok.com/api",
-            params={"tag": "dev"},
-            headers={"User-Agent": "Vantage/1.0 job discovery"},
-            timeout=DEFAULT_TIMEOUT,
-        )
-        response.raise_for_status()
-        data = response.json()
-    except Exception as exc:
-        print(f"[remoteok] error: {exc}")
-        return []
-
-    jobs = []
-    for item in data:
-        if not isinstance(item, dict) or not item.get("id"):
-            continue
-
-        job = {
-            "external_id": f"remoteok-{item.get('id')}",
-            "source": "Remote OK",
-            "title": item.get("position") or "Unknown Role",
-            "company": item.get("company") or "Unknown Company",
-            "location": item.get("location") or "Remote",
-            "description": _clean_html(item.get("description")),
-            "source_url": item.get("url") or "",
-            "apply_url": item.get("url") or "",
-            "posted_at": item.get("date") or "",
-            "automation_supported": False,
-        }
-
-        if _matches_query(job, query, location):
-            jobs.append(job)
-
-        if len(jobs) >= limit:
-            break
-
-    print(f"[remoteok] loaded {len(jobs)}")
-    return jobs
-
-
 def fetch_himalayas_jobs(
     query: str = "software developer",
     location: str = "India",
