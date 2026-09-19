@@ -345,6 +345,23 @@ def update_application(
     conn.close()
 
 
+
+def get_daily_application_count() -> int:
+    conn = get_connection()
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM applications
+        WHERE substr(created_at, 1, 10) = ?
+        """,
+        (today,),
+    ).fetchone()
+
+    conn.close()
+    return int(row["count"] or 0)
+
 def get_applications(limit: int = 100):
     conn = get_connection()
 
