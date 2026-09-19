@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import requests
 
 
@@ -13,86 +15,69 @@ DEFAULT_COMPANIES = [
 ]
 
 
+def _fetch_company(company: str) -> list[dict]:
+    try:
+        response = requests.get(
+            f"{GREENHOUSE_URL}/{company}/jobs",
+            params={"content": "true"},
+            timeout=7,
+        )
+
+        if response.status_code != 200:
+            print(f"[greenhouse] {company}: HTTP {response.status_code}")
+            return []
+
+        results = response.json().get("jobs", [])
+        jobs = []
+
+        for job in results:
+            location = job.get("location") or {}
+            apply_url = job.get("absolute_url", "")
+
+            jobs.append(
+                {
+                    "external_id": f"greenhouse-{job.get('id')}",
+                    "source": "Greenhouse",
+                    "title": job.get("title", "Unknown Role"),
+                    "company": company.title(),
+                    "location": location.get("name", "Remote"),
+                    "source_url": apply_url,
+                    "apply_url": apply_url,
+                    "description": job.get("content", ""),
+                    "posted_at": "",
+                    "automation_supported": False,
+                }
+            )
+
+        return jobs
+
+    except requests.RequestException as exc:
+        print(f"[greenhouse] {company} request error: {exc}")
+        return []
+    except Exception as exc:
+        print(f"[greenhouse] {company} parsing error: {exc}")
+        return []
+
+
 def fetch_greenhouse_jobs(
     board_token=None,
-    limit=25,
+    limit=60,
 ):
-    """
-    Fetch published jobs from a Greenhouse job board.
-
-    board_token:
-        Greenhouse board/company token.
-        If not supplied, the default company list is used.
-    """
-
-    companies = (
-        [board_token]
-        if board_token
-        else DEFAULT_COMPANIES
-    )
+    companies = [board_token] if board_token else DEFAULT_COMPANIES
 
     jobs = []
 
-    for company in companies:
-        try:
-            response = requests.get(
-                f"{GREENHOUSE_URL}/{company}/jobs",
-                params={
-                    "content": "true",
-                },
-                timeout=15,
-            )
+    with ThreadPoolExecutor(max_workers=min(6, len(companies))) as executor:
+        futures = {
+            executor.submit(_fetch_company, company): company
+            for company in companies
+        }
 
-            if response.status_code != 200:
-                continue
+        for future in as_completed(futures):
+            company = futures[future]
+            try:
+                jobs.extend(future.result() or [])
+            except Exception as exc:
+                print(f"[greenhouse] {company} worker error: {exc}")
 
-            data = response.json()
-            results = data.get("jobs", [])
-
-            for job in results:
-                location = job.get("location") or {}
-
-                jobs.append(
-                    {
-                        "external_id": f"greenhouse-{job.get('id')}",
-                        "source": "Greenhouse",
-                        "title": job.get(
-                            "title",
-                            "Unknown Role",
-                        ),
-                        "company": company.title(),
-                        "location": location.get(
-                            "name",
-                            "Remote",
-                        ),
-                        "source_url": job.get(
-                            "absolute_url",
-                            "",
-                        ),
-                        "apply_url": job.get(
-                            "absolute_url",
-                            "",
-                        ),
-                        "description": job.get(
-                            "content",
-                            "",
-                        ),
-                        "posted_at": None,
-                        "automation_supported": True,
-                    }
-                )
-
-                if len(jobs) >= limit:
-                    return jobs
-
-        except requests.RequestException as exc:
-            print(
-                f"[greenhouse] {company} request error: {exc}"
-            )
-
-        except Exception as exc:
-            print(
-                f"[greenhouse] {company} parsing error: {exc}"
-            )
-
-    return jobs
+    return jobs[:limit]
