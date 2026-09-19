@@ -9,12 +9,17 @@ import { api } from '../lib/api';
 
 
 const SOURCE_COLORS = {
-  Adzuna: '#2DD4BF',
   Lever: '#8B5CF6',
   Greenhouse: '#22C55E',
+  'Remote OK': '#2DD4BF',
+  Himalayas: '#F59E0B',
+  Jobicy: '#38BDF8',
+  Arbeitnow: '#A78BFA',
   Indeed: '#2164F3',
   LinkedIn: '#0A66C2',
   Naukri: '#4A90E2',
+  Glassdoor: '#0CAA41',
+  WorkIndia: '#FF7A00',
 };
 
 
@@ -506,7 +511,7 @@ export default function Jobs() {
                         }}
                         className="mt-4 bg-teal text-bg font-semibold text-xs rounded-md px-3.5 py-2"
                       >
-                        Open / Apply →
+                        {job.automation_supported ? 'Auto Apply →' : 'Open / Apply →'}
                       </button>
 
                     )}
