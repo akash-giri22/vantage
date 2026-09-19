@@ -5,6 +5,7 @@ from services.job_aggregator import fetch_jobs
 from services.job_matcher import calculate_match
 from services.job_store import (
     init_db,
+    mark_all_jobs_inactive,
     save_job,
     get_jobs,
     get_job,
@@ -14,7 +15,6 @@ from services.apply_agent import process_job_application
 
 
 router = APIRouter()
-
 init_db()
 
 
@@ -28,10 +28,10 @@ def list_jobs(
     location: str = "India",
 ):
     resume_profile = get_resume_profile()
-    resume_text = ""
+    resume_text = resume_profile.get("resume_text", "") if resume_profile else ""
 
-    if resume_profile:
-        resume_text = resume_profile.get("resume_text") or ""
+    # Keep old jobs for tracker/history, but hide them from the live feed.
+    mark_all_jobs_inactive()
 
     fetched_jobs = fetch_jobs(
         query=q,
@@ -39,8 +39,6 @@ def list_jobs(
     )
 
     for job in fetched_jobs:
-        # calculate_match() currently accepts only
-        # resume_text and job_description.
         combined_job_text = (
             f"{job.get('title', '')}\n"
             f"{job.get('description', '')}"
@@ -54,13 +52,11 @@ def list_jobs(
         job["match_score"] = match_data["match_score"]
         job["match_reasons"] = match_data["match_reasons"]
         job["missing_skills"] = match_data["missing_skills"]
-
-        # Keep the frontend-compatible match field too.
         job["match"] = match_data["match_score"]
 
         save_job(job)
 
-    return get_jobs()
+    return get_jobs(limit=150)
 
 
 @router.get("/{job_id}")
@@ -89,14 +85,9 @@ def apply_to_job(
             detail="Job not found.",
         )
 
-    resume_name = ""
+    resume_name = payload.resume_name if payload else ""
 
-    if payload:
-        resume_name = payload.resume_name
-
-    result = process_job_application(
+    return process_job_application(
         job_id=job_id,
         resume_name=resume_name,
     )
-
-    return result
