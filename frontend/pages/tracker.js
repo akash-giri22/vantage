@@ -4,11 +4,21 @@ import { api } from '../lib/api';
 
 const STATUS_STYLES = {
   applied: 'bg-teal/10 text-teal',
+  applying: 'bg-amber/10 text-amber',
+  ready_to_apply: 'bg-amber/10 text-amber',
+  manual_action_required: 'bg-indigo/10 text-indigo',
   pending: 'bg-amber/10 text-amber',
-  manual: 'bg-indigo/10 text-indigo',
+  failed: 'bg-red-500/10 text-red-400',
 };
 
-const STATUS_LABEL = { applied: 'Applied', pending: 'Pending', manual: 'Needs manual apply' };
+const STATUS_LABEL = {
+  applied: 'Applied',
+  applying: 'Applying',
+  ready_to_apply: 'Ready to apply',
+  manual_action_required: 'Needs manual apply',
+  pending: 'Pending',
+  failed: 'Failed',
+};
 
 export default function Tracker() {
   const [rows, setRows] = useState([]);
@@ -37,7 +47,7 @@ export default function Tracker() {
               {row.company} · {row.source} · {row.status}
             </div>
           </div>
-          <div className={`font-mono text-[11.5px] px-2.5 py-1 rounded-md flex-shrink-0 ${STATUS_STYLES[row.status]}`}>
+          <div className={`font-mono text-[11.5px] px-2.5 py-1 rounded-md flex-shrink-0 ${STATUS_STYLES[row.status] || 'bg-surface2 text-inksoft'}`}>
             {STATUS_LABEL[row.status] || row.status}
           </div>
         </div>
