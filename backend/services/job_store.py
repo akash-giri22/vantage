@@ -36,10 +36,21 @@ def init_db():
             missing_skills TEXT DEFAULT '[]',
             automation_supported INTEGER DEFAULT 0,
             discovered_at TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
             UNIQUE(source, external_id)
         )
         """
     )
+
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
+    }
+
+    if "is_active" not in columns:
+        conn.execute(
+            "ALTER TABLE jobs ADD COLUMN is_active INTEGER DEFAULT 1"
+        )
 
     conn.execute(
         """
@@ -75,7 +86,6 @@ def init_db():
 
 def save_resume_profile(resume_text: str, resume_name: str = ""):
     conn = get_connection()
-
     now = datetime.now(timezone.utc).isoformat()
 
     conn.execute(
@@ -117,9 +127,15 @@ def get_resume_profile() -> Optional[dict[str, str]]:
     }
 
 
+def mark_all_jobs_inactive():
+    conn = get_connection()
+    conn.execute("UPDATE jobs SET is_active = 0")
+    conn.commit()
+    conn.close()
+
+
 def save_job(job: dict[str, Any]) -> int:
     conn = get_connection()
-
     now = datetime.now(timezone.utc).isoformat()
 
     conn.execute(
@@ -138,9 +154,10 @@ def save_job(job: dict[str, Any]) -> int:
             match_reasons,
             missing_skills,
             automation_supported,
-            discovered_at
+            discovered_at,
+            is_active
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(source, external_id)
         DO UPDATE SET
             title = excluded.title,
@@ -153,7 +170,9 @@ def save_job(job: dict[str, Any]) -> int:
             match_score = excluded.match_score,
             match_reasons = excluded.match_reasons,
             missing_skills = excluded.missing_skills,
-            automation_supported = excluded.automation_supported
+            automation_supported = excluded.automation_supported,
+            discovered_at = excluded.discovered_at,
+            is_active = 1
         """,
         (
             str(job["external_id"]),
@@ -181,28 +200,35 @@ def save_job(job: dict[str, Any]) -> int:
         FROM jobs
         WHERE source = ? AND external_id = ?
         """,
-        (
-            job["source"],
-            str(job["external_id"]),
-        ),
+        (job["source"], str(job["external_id"])),
     ).fetchone()
 
     conn.close()
-
     return int(row["id"])
 
 
-def get_jobs(
-    min_match: int = 0,
-    limit: int = 100,
-):
+def _decode_job(row) -> dict:
+    item = dict(row)
+    item["match_reasons"] = json.loads(
+        item.get("match_reasons") or "[]"
+    )
+    item["missing_skills"] = json.loads(
+        item.get("missing_skills") or "[]"
+    )
+    item["automation_supported"] = bool(item["automation_supported"])
+    item["is_active"] = bool(item.get("is_active", 1))
+    return item
+
+
+def get_jobs(min_match: int = 0, limit: int = 100):
     conn = get_connection()
 
     rows = conn.execute(
         """
         SELECT *
         FROM jobs
-        WHERE match_score >= ?
+        WHERE is_active = 1
+          AND match_score >= ?
         ORDER BY match_score DESC, discovered_at DESC
         LIMIT ?
         """,
@@ -210,27 +236,7 @@ def get_jobs(
     ).fetchall()
 
     conn.close()
-
-    result = []
-
-    for row in rows:
-        item = dict(row)
-
-        item["match_reasons"] = json.loads(
-            item.get("match_reasons") or "[]"
-        )
-
-        item["missing_skills"] = json.loads(
-            item.get("missing_skills") or "[]"
-        )
-
-        item["automation_supported"] = bool(
-            item["automation_supported"]
-        )
-
-        result.append(item)
-
-    return result
+    return [_decode_job(row) for row in rows]
 
 
 def get_job(job_id: int):
@@ -250,21 +256,7 @@ def get_job(job_id: int):
     if not row:
         return None
 
-    item = dict(row)
-
-    item["match_reasons"] = json.loads(
-        item.get("match_reasons") or "[]"
-    )
-
-    item["missing_skills"] = json.loads(
-        item.get("missing_skills") or "[]"
-    )
-
-    item["automation_supported"] = bool(
-        item["automation_supported"]
-    )
-
-    return item
+    return _decode_job(row)
 
 
 def create_application(
@@ -276,7 +268,6 @@ def create_application(
     action_required: bool = False,
 ):
     conn = get_connection()
-
     now = datetime.now(timezone.utc).isoformat()
 
     conn.execute(
@@ -304,11 +295,9 @@ def create_application(
     )
 
     conn.commit()
-
     application_id = conn.execute(
         "SELECT last_insert_rowid()"
     ).fetchone()[0]
-
     conn.close()
 
     return int(application_id)
@@ -379,5 +368,4 @@ def get_applications(limit: int = 100):
     ).fetchall()
 
     conn.close()
-
     return [dict(row) for row in rows]
