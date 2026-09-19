@@ -42,7 +42,7 @@ client = (
 
 MODEL_NAME = "gemini-3.6-flash"
 
-FALLBACK_MODEL_NAME = "gemini-2.5-flash"
+FALLBACK_MODEL_NAME = "gemini-3.5-flash"
 
 
 # =========================================================
