@@ -15,6 +15,8 @@ const SOURCE_COLORS = {
   Himalayas: '#F59E0B',
   Jobicy: '#38BDF8',
   Arbeitnow: '#A78BFA',
+  'The Muse': '#14B8A6',
+  Adzuna: '#EF4444',
   Indeed: '#2164F3',
   LinkedIn: '#0A66C2',
   Naukri: '#4A90E2',
