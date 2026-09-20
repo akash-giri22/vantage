@@ -27,19 +27,6 @@ def process_job_application(
             "message": "Job not found.",
         }
 
-    used_today = get_daily_application_count()
-
-    if used_today >= DAILY_APPLY_CAP:
-        return {
-            "status": "daily_cap_reached",
-            "daily_apply_cap": DAILY_APPLY_CAP,
-            "applies_today": used_today,
-            "message": (
-                f"Daily application cap of {DAILY_APPLY_CAP} "
-                "has been reached."
-            ),
-        }
-
     source = (job.get("source") or "").lower()
     apply_url = job.get("apply_url") or ""
 
@@ -49,18 +36,19 @@ def process_job_application(
             "message": "No application URL available.",
         }
 
-    application_id = create_application(
-        job_id=job_id,
-        status="applying",
-        apply_mode="automatic" if job.get("automation_supported") else "manual",
-        resume_name=resume_name,
-    )
-
+    # Manual applications do not consume Vantage's automatic-apply cap.
+    # The user completes the application on the original job site.
     if not job.get("automation_supported"):
+        application_id = create_application(
+            job_id=job_id,
+            status="manual_action_required",
+            apply_mode="manual",
+            resume_name=resume_name,
+        )
+
         reason = (
-            "This source does not expose a supported candidate "
-            "application API to Vantage. Open the original application "
-            "page to submit the application."
+            "Manual application: continue on the original job site. "
+            "Vantage does not store or enter your third-party account password."
         )
 
         update_application(
@@ -81,10 +69,32 @@ def process_job_application(
             "status": "manual_action_required",
             "application_id": application_id,
             "apply_url": apply_url,
-            "applies_today": used_today + 1,
+            "applies_today": get_daily_application_count(),
             "daily_apply_cap": DAILY_APPLY_CAP,
             "message": reason,
         }
+
+    used_today = get_daily_application_count()
+
+    if used_today >= DAILY_APPLY_CAP:
+        return {
+            "status": "daily_cap_reached",
+            "daily_apply_cap": DAILY_APPLY_CAP,
+            "applies_today": used_today,
+            "message": (
+                f"Daily application cap of {DAILY_APPLY_CAP} "
+                "has been reached."
+            ),
+        }
+
+    application_id = create_application(
+        job_id=job_id,
+        status="applying",
+        apply_mode="automatic" if job.get("automation_supported") else "manual",
+        resume_name=resume_name,
+    )
+
+
 
     # This branch is intentionally only enabled for a source that has
     # a real candidate-submission integration. It must never claim success
