@@ -8,6 +8,8 @@ from services.job_sources.public_boards import (
     fetch_arbeitnow_jobs,
     fetch_himalayas_jobs,
     fetch_jobicy_jobs,
+    fetch_themuse_jobs,
+    fetch_adzuna_jobs,
 )
 
 
@@ -93,6 +95,12 @@ def _source_jobs(
             query=query, location=location, limit=30
         ),
         "Arbeitnow": lambda: fetch_arbeitnow_jobs(
+            query=query, location=location, limit=30
+        ),
+        "The Muse": lambda: fetch_themuse_jobs(
+            query=query, location=location, limit=30
+        ),
+        "Adzuna": lambda: fetch_adzuna_jobs(
             query=query, location=location, limit=30
         ),
     }
